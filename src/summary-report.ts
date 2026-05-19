@@ -82,6 +82,129 @@ interface GrypeDoc {
   descriptor?: { name?: string; version?: string; db?: { built?: string } };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Software-Delivery-Quality-Score
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RatingInput {
+  componentCount: number;
+  severityCounts: { critical: number; high: number; medium: number; low: number };
+  strongCopyleft: number;
+  proprietary: number;
+  unknownLicense: number;
+  hasResidualRisk: boolean;
+}
+
+interface RatingResult {
+  score: number;          // 0..100
+  grade: string;          // A+, A, B, C, D, F
+  label: string;          // kurze Bezeichnung
+  explain: string;        // ein Satz
+  color: { fg: string; bg: string; border: string };
+  reasons: string[];      // Aufzählung der größten Abzüge
+}
+
+/**
+ * Berechnet einen 0..100-Score und übersetzt ihn in eine Schulnote.
+ * Heuristisch, ohne Anspruch auf Vollständigkeit — soll dem Reviewer
+ * sofort ein „grün/gelb/rot"-Signal geben.
+ */
+function computeRating(r: RatingInput): RatingResult {
+  let score = 100;
+  const reasons: string[] = [];
+
+  // CVE-Abzüge (capped, damit ein Riesenpaket mit 200 Low-CVEs nicht
+  // dieselbe Wertung wie eines mit 5 Critical bekommt).
+  const critPenalty = Math.min(r.severityCounts.critical * 10, 50);
+  if (critPenalty > 0) {
+    score -= critPenalty;
+    reasons.push(`${r.severityCounts.critical} Critical-CVE${r.severityCounts.critical === 1 ? '' : 's'} (−${critPenalty})`);
+  }
+  const highPenalty = Math.min(r.severityCounts.high * 5, 30);
+  if (highPenalty > 0) {
+    score -= highPenalty;
+    reasons.push(`${r.severityCounts.high} High-CVE${r.severityCounts.high === 1 ? '' : 's'} (−${highPenalty})`);
+  }
+  const medPenalty = Math.min(r.severityCounts.medium * 1, 15);
+  if (medPenalty > 0) {
+    score -= medPenalty;
+    reasons.push(`${r.severityCounts.medium} Medium-CVE${r.severityCounts.medium === 1 ? '' : 's'} (−${medPenalty})`);
+  }
+  const lowPenalty = Math.min(r.severityCounts.low * 0.2, 5);
+  if (lowPenalty >= 1) {
+    score -= lowPenalty;
+    reasons.push(`${r.severityCounts.low} Low-CVE${r.severityCounts.low === 1 ? '' : 's'} (−${lowPenalty.toFixed(1)})`);
+  } else {
+    score -= lowPenalty;
+  }
+
+  // Lizenz-Compliance.
+  const sclPenalty = Math.min(r.strongCopyleft * 3, 15);
+  if (sclPenalty > 0) {
+    score -= sclPenalty;
+    reasons.push(`${r.strongCopyleft} Komponente${r.strongCopyleft === 1 ? '' : 'n'} unter starker Copyleft-Lizenz (GPL/AGPL/SSPL) (−${sclPenalty})`);
+  }
+  const propPenalty = Math.min(r.proprietary * 2, 10);
+  if (propPenalty > 0) {
+    score -= propPenalty;
+    reasons.push(`${r.proprietary} proprietäre Komponente${r.proprietary === 1 ? '' : 'n'} (−${propPenalty})`);
+  }
+  const unkPenalty = Math.min(r.unknownLicense * 0.1, 10);
+  if (unkPenalty >= 1) {
+    score -= unkPenalty;
+    reasons.push(`${r.unknownLicense} Komponenten ohne erkannte Lizenz (−${unkPenalty.toFixed(1)})`);
+  } else {
+    score -= unkPenalty;
+  }
+
+  // Extraktions-Vollständigkeit.
+  if (r.componentCount === 0) {
+    score -= 50;
+    reasons.push('Keine Komponenten katalogisiert — Extraktion vermutlich gescheitert (−50)');
+  } else if (r.componentCount < 10) {
+    score -= 10;
+    reasons.push(`Nur ${r.componentCount} Komponente${r.componentCount === 1 ? '' : 'n'} gefunden — Extraktion möglicherweise unvollständig (−10)`);
+  }
+
+  if (r.hasResidualRisk) {
+    score -= 5;
+    reasons.push('Audit-Report meldet Restrisiken / übersprungene Inhalte (−5)');
+  }
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  // Note + Farbe ableiten.
+  let grade: string, label: string, explain: string;
+  let color: { fg: string; bg: string; border: string };
+  if (score >= 95) {
+    grade = 'A+'; label = 'Ausgezeichnet';
+    explain = 'Saubere Lieferung mit minimaler Restrisiko-Fläche.';
+    color = { fg: '#14532d', bg: '#dcfce7', border: '#15803d' };
+  } else if (score >= 85) {
+    grade = 'A';  label = 'Sehr gut';
+    explain = 'Lieferbar — kleinere Hinweise prüfen.';
+    color = { fg: '#365314', bg: '#ecfccb', border: '#65a30d' };
+  } else if (score >= 75) {
+    grade = 'B';  label = 'Gut';
+    explain = 'Akzeptabel, einige Befunde sollten gesichtet werden.';
+    color = { fg: '#854d0e', bg: '#fef9c3', border: '#ca8a04' };
+  } else if (score >= 65) {
+    grade = 'C';  label = 'Mittelmäßig';
+    explain = 'Mit Vorbehalt freigebbar — nennenswerte Befunde adressieren.';
+    color = { fg: '#92400e', bg: '#fef3c7', border: '#d97706' };
+  } else if (score >= 50) {
+    grade = 'D';  label = 'Bedenklich';
+    explain = 'Vor Freigabe nachbessern oder Risiken explizit akzeptieren.';
+    color = { fg: '#9a3412', bg: '#ffedd5', border: '#ea580c' };
+  } else {
+    grade = 'F';  label = 'Nicht freigebbar';
+    explain = 'Schwerwiegende Befunde — Lieferung nicht ohne Eingriff einsetzen.';
+    color = { fg: '#7f1d1d', bg: '#fee2e2', border: '#b91c1c' };
+  }
+
+  return { score, grade, label, explain, color, reasons: reasons.slice(0, 5) };
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>)[c]!
@@ -294,6 +417,24 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
     licenseByCategory[categorizeComponent(c)].push(c);
   }
 
+  // ── Software-Delivery-Quality-Score ────────────────────────────────────────
+  // Heuristisches Rating 0..100 für „wie sauber/sicher ist diese Lieferung".
+  // Stellt die wichtigste Information beim Aufschlagen des Berichts dar.
+  const sevCounts = {
+    critical: vulnBySev.Critical.length,
+    high:     vulnBySev.High.length,
+    medium:   vulnBySev.Medium.length,
+    low:      vulnBySev.Low.length,
+  };
+  const rating = computeRating({
+    componentCount: comps.length,
+    severityCounts: sevCounts,
+    strongCopyleft: licenseByCategory['strong-copyleft'].length,
+    proprietary:    licenseByCategory['proprietary'].length,
+    unknownLicense: licenseByCategory['unknown'].length,
+    hasResidualRisk: residualRisk != null && residualRisk.length > 50,
+  });
+
   const licenseChips = LICENSE_CATEGORY_ORDER.map((cat) => {
     const count = licenseByCategory[cat].length;
     if (count === 0) return '';
@@ -471,6 +612,19 @@ line-height:1.55;font-size:15px;-webkit-font-smoothing:antialiased}
 main{max-width:1240px;margin:0 auto;background:var(--card);border:1px solid var(--border);
 border-radius:16px;padding:2rem 2.2rem;box-shadow:0 6px 24px rgba(0,43,127,.08)}
 header.summary{padding-bottom:1.1rem;margin-bottom:1.4rem;border-bottom:1px solid var(--border)}
+.rating-card{display:flex;gap:1.2rem;align-items:stretch;margin:1rem 0;
+padding:1.1rem 1.3rem;border-radius:14px;border:1px solid var(--rating-border);
+background:var(--rating-bg);color:var(--rating-fg)}
+.rating-grade{display:flex;flex-direction:column;align-items:center;justify-content:center;
+min-width:120px;padding:.5rem 1rem;border-right:1px solid var(--rating-border)}
+.rating-letter{font-size:3.2rem;font-weight:800;line-height:1;letter-spacing:-.04em;color:var(--rating-border)}
+.rating-score{font-size:.85rem;font-weight:600;opacity:.85;margin-top:.3rem;font-variant-numeric:tabular-nums}
+.rating-info{flex:1;min-width:0}
+.rating-headline{font-size:1.1rem;font-weight:700;margin-bottom:.2rem}
+.rating-explain{font-size:.92rem;opacity:.92;margin-bottom:.6rem}
+.rating-reasons{margin:.4rem 0 0;padding-left:1.2rem;font-size:.85rem;line-height:1.5}
+.rating-reasons li{margin:.1rem 0}
+@media (max-width:640px){.rating-card{flex-direction:column;gap:.6rem}.rating-grade{border-right:0;border-bottom:1px solid var(--rating-border);padding-bottom:.6rem;min-width:0}}
 h1{margin:0 0 .3em;font-size:1.6rem;letter-spacing:-.01em;color:var(--accent);display:flex;align-items:center;gap:.6rem}
 h1::before{content:"";width:5px;height:22px;border-radius:2px;
 background:linear-gradient(180deg,var(--accent),var(--accent-2))}
@@ -543,6 +697,22 @@ border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
   <header class="summary">
     <h1>Gesamtübersicht</h1>
     <div class="subline mono">${escapeHtml(inputName)}</div>
+
+    <div class="rating-card" style="--rating-fg:${rating.color.fg};--rating-bg:${rating.color.bg};--rating-border:${rating.color.border}">
+      <div class="rating-grade">
+        <div class="rating-letter">${rating.grade}</div>
+        <div class="rating-score">${rating.score} / 100</div>
+      </div>
+      <div class="rating-info">
+        <div class="rating-headline">${escapeHtml(rating.label)}</div>
+        <div class="rating-explain">${escapeHtml(rating.explain)}</div>
+        ${rating.reasons.length > 0 ? `
+          <ul class="rating-reasons">
+            ${rating.reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}
+          </ul>` : ''}
+      </div>
+    </div>
+
     <div class="kv">
       <div>
         <div class="kv-label">Komponenten</div>
@@ -551,6 +721,14 @@ border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
       <div>
         <div class="kv-label">Schwachstellen</div>
         <div class="kv-value"><strong>${matches.length}</strong> ${matches.length === 0 ? '— sauber' : 'Treffer'}</div>
+      </div>
+      <div>
+        <div class="kv-label">Critical / High</div>
+        <div class="kv-value"><strong>${sevCounts.critical}</strong> / <strong>${sevCounts.high}</strong></div>
+      </div>
+      <div>
+        <div class="kv-label">Strong-Copyleft / Proprietary</div>
+        <div class="kv-value"><strong>${licenseByCategory['strong-copyleft'].length}</strong> / <strong>${licenseByCategory['proprietary'].length}</strong></div>
       </div>
       ${rootHash ? `<div>
         <div class="kv-label">SHA-256</div>
@@ -565,6 +743,11 @@ border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
     ? `<div class="muted">Keine Komponenten katalogisiert.</div>`
     : componentsHtml}
 
+  <div class="section-title">Lizenzen</div>
+  ${comps.length === 0
+    ? `<div class="muted">Keine Komponenten — keine Lizenzdaten.</div>`
+    : `<div class="chips">${licenseChips}</div>${complianceWarning}${licenseGroupsHtml}`}
+
   <div class="section-title">Schwachstellen</div>
   ${matches.length === 0
     ? `<div class="ok-banner">✓ Keine bekannten Schwachstellen in den katalogisierten Komponenten.</div>`
@@ -577,6 +760,32 @@ border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
     ${grype ? ` · grype ${escapeHtml(grype.descriptor?.version ?? '?')}${grype.descriptor?.db?.built ? ` · DB ${escapeHtml(grype.descriptor.db.built)}` : ''}` : ''}
   </footer>
 </main>
+<script>
+(function(){
+  function setupFilter(input){
+    var total=parseInt(input.dataset.total||'0',10);
+    var countEl=input.parentNode.querySelector('.filter-count');
+    var tbody=input.closest('.group-body').querySelector('tbody');
+    var timer=null;
+    function applyFilter(){
+      var q=input.value.toLowerCase().trim();
+      var rows=tbody.querySelectorAll('tr');
+      var visible=0;
+      rows.forEach(function(tr){
+        var match=!q||tr.textContent.toLowerCase().indexOf(q)>=0;
+        tr.style.display=match?'':'none';
+        if(match)visible++;
+      });
+      if(countEl)countEl.textContent=q?(visible+' von '+total+' sichtbar'):'';
+    }
+    input.addEventListener('input',function(){
+      clearTimeout(timer);
+      timer=setTimeout(applyFilter,16);
+    });
+  }
+  document.querySelectorAll('.tbl-filter').forEach(setupFilter);
+})();
+</script>
 </body>
 </html>`;
 
