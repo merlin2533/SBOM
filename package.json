@@ -1,19 +1,42 @@
 {
   "name": "sbom-upload-app",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Ephemeral web frontend for TomTonic/extract-sbom: upload an artifact (up to 5 GB), supply archive passwords, and download the generated CycloneDX SBOM and audit report.",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
-  },
+  "description": "Ephemeral web frontend for TomTonic/extract-sbom: resumable upload, sandboxed analysis, downloadable SBOM and audit report.",
+  "main": "dist/index.js",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "npm run build:server && npm run build:frontend && npm run vendor:tus",
+    "build:server": "tsc -p tsconfig.json",
+    "build:frontend": "tsc -p tsconfig.frontend.json",
+    "vendor:tus": "node scripts/vendor-tus.cjs",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.frontend.json --noEmit",
+    "preflight": "bash scripts/preflight.sh"
   },
   "dependencies": {
-    "cookie-parser": "^1.4.6",
-    "express": "^4.19.2",
-    "multer": "^2.1.1"
+    "@tus/file-store": "^1.5.0",
+    "@tus/server": "^1.10.0",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.1",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.7",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.7.4",
+    "@types/supertest": "^6.0.2",
+    "pino-pretty": "^11.2.2",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.1",
+    "tus-js-client": "^4.1.0",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
   }
 }
