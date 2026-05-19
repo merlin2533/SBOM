@@ -11,6 +11,7 @@ import { wrapCommand } from './sandbox';
 import { shredUnlink } from './shred';
 import { preExtract, cleanupPreExtract, PreExtractResult } from './pre-extract';
 import { runVulnReport } from './vuln-report';
+import { buildSummaryReport } from './summary-report';
 
 export interface EnqueueOpts {
   uploadPath: string;
@@ -267,6 +268,27 @@ export class JobRunner {
                 job,
                 'stdout',
                 `[vuln-report] übersprungen (grype nicht verfügbar oder fehlgeschlagen)`
+              );
+            }
+
+            // Kombinierter Gesamtübersicht-Bericht (Komponenten + CVEs +
+            // Restrisiken in einem HTML).
+            const reportMd = entries.find((n) => /\.report\.md$/i.test(n));
+            const summaryRes = await buildSummaryReport({
+              cdxJsonPath: path.join(job.outDir, cdx),
+              grypeJsonPath: vr.ranGrype ? vr.jsonPath : null,
+              reportMdPath: reportMd ? path.join(job.outDir, reportMd) : null,
+              outDir: job.outDir,
+              inputName: job.inputName,
+              jobId: job.id,
+              logger: this.logger,
+            });
+            if (summaryRes.htmlPath) {
+              this.sessions.pushLog(
+                sess,
+                job,
+                'stdout',
+                `[summary] Gesamtübersicht: ${summaryRes.componentCount} Komponenten, ${summaryRes.vulnTotal} CVEs → ${path.basename(summaryRes.htmlPath)}`
               );
             }
           }
