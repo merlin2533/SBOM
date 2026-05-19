@@ -287,11 +287,29 @@ export function createApp(config: ServerConfig): AppResult {
   })();
 
   app.get('/', async (req: Request, res: Response) => {
+    // Reuse the existing session if the cookie still maps to a live one.
+    // Earlier behaviour was to destroy + recreate on every GET /, but
+    // browser prefetchers (Chrome typing-prefetch, link preloaders) and
+    // double-tab opens fire GET / twice in quick succession — the second
+    // call would invalidate the session the first call's HTML was issued
+    // against, so tus/SSE then got 401/440 with a server-side "session
+    // not found".
+    //
+    // Ephemerality is preserved by:
+    //   * POST /api/reset (explicit "Neue Sitzung" button) which both
+    //     destroys the session AND clearCookies; the subsequent reload
+    //     creates a new one.
+    //   * the navigator.sendBeacon('/api/reset') the SPA fires on
+    //     pagehide (tab close).
+    //   * the idle GC.
+    //   * SIGTERM drain.
     const prev = req.cookies?.['sid'] as string | undefined;
-    if (prev) {
-      await sessions.destroy(prev);
+    let sess = sessions.get(prev);
+    if (!sess) {
+      sess = sessions.create();
+    } else {
+      sessions.touch(sess);
     }
-    const sess = sessions.create();
     res.cookie('sid', sess.sid, {
       httpOnly: true,
       // SameSite=Lax keeps the cookie out of cross-site form-POSTs (the real
