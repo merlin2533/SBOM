@@ -68,6 +68,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute APP_VERSION (MAJOR.MINOR.<commit_count>+<short_sha>)
+        id: ver
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          commits=$(git rev-list --count HEAD)
+          short=$(git rev-parse --short HEAD)
+          full="${base}.${commits}+${short}"
+          echo "Computed APP_VERSION=$full"
+          echo "version=$full" >> "$GITHUB_OUTPUT"
+          # Docker tag: SemVer-only flavour (no +metadata; OCI tags can't contain '+').
+          echo "tag=${base}.${commits}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
@@ -81,6 +94,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.ver.outputs.tag }},enable={{is_default_branch}}
           labels: |
             org.opencontainers.image.title=sbom-upload-app
             org.opencontainers.image.description=Ephemeral web frontend for TomTonic/extract-sbom
@@ -97,6 +111,8 @@ jobs:
           platforms: ${{ github.event.inputs.platforms || 'linux/amd64' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
