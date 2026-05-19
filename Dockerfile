@@ -76,11 +76,19 @@ LABEL org.opencontainers.image.title="sbom-upload-app" \
 # ca-certificates for TLS to any external mirror.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bubblewrap ca-certificates curl tini \
+      ca-certificates curl tini \
       # extract-sbom benutzt laut Source-Code (internal/extract/extract_external.go)
       # nur 7zz/7za/7z (alle Archive: ZIP, 7z, RAR, MSI, CAB) und unshield
-      # (InstallShield-Cabinets). p7zip-full liefert 7z; den Rest brauchen
-      # wir nicht.
+      # (InstallShield-Cabinets). p7zip-full liefert 7z.
+      #
+      # bewusst NICHT installiert: bubblewrap. extract-sbom wickelt sonst
+      # jede Tool-Invokation per Default in `bwrap` ein, und das schlägt
+      # in vielen Container-Hosts fehl (kein unprivileged user namespace
+      # → „No permissions to create new namespace"). Selbst mit globalem
+      # --unsafe zieht extract-sbom den per-Tool-bwrap mit, sobald das
+      # Binary auf PATH liegt. Lösung: bwrap weglassen, dann fällt
+      # extract-sbom auf direkte exec.Command zurück — der Container ist
+      # sowieso die einzige Sandbox-Schicht.
       p7zip-full unshield \
  && curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
       | sh -s -- -b /usr/local/bin "$SYFT_VERSION" \
