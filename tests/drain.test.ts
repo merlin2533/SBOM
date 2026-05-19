@@ -118,8 +118,10 @@ describe('drain()', () => {
 
     await app.drain();
 
-    // After drain, the child's close event sets state to cancelled (SIGTERM) or failed
-    // The job object persists in memory even after drain
+    // After drain, the child's close event sets state to cancelled (SIGTERM) or failed.
+    // If drain exited via the grace timeout rather than waiting for the close event,
+    // the state update in job.ts may lag slightly. Poll briefly to allow it to settle.
+    await waitFor(() => capturedJob!.state !== 'running', 1000);
     expect(['cancelled', 'failed']).toContain(capturedJob!.state);
 
     app = undefined; // already drained
