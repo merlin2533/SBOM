@@ -240,6 +240,16 @@ html, body {
   box-shadow: 0 0 0 3px var(--ok-soft);
   flex-shrink: 0;
 }
+/* Versions-Pill: kein Status-Dot, dafür Brand-Akzent */
+.pill.version-pill::before {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.pill.version-pill {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: rgba(0, 43, 127, .25);
+}
 
 .state-badge {
   display: inline-flex;

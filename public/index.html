@@ -4,6 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>SBOM-Extraktor</title>
+<!-- Session-Id und App-Version werden vom Server zur Request-Zeit eingesetzt. -->
+<!-- Die sid hier dient als Fallback, falls das HttpOnly-Cookie unterwegs verloren geht (Tunnel/Proxy). -->
+<meta name="x-sid" content="{{SID}}" />
+<meta name="x-version" content="{{VERSION}}" />
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -25,6 +29,7 @@
       </div>
     </div>
     <div class="topbar-meta">
+      <span class="pill version-pill" id="versionPill" title="App-Version">v…</span>
       <span class="pill" id="sessionPill" title="Sitzungs-ID">Sitzung …</span>
       <button id="resetBtn" class="ghost" type="button">Neue Sitzung</button>
     </div>
