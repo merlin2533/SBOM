@@ -24,7 +24,10 @@ describe('Session lifecycle', () => {
     expect(res.body.jobs).toEqual([]);
   });
 
-  it('calling GET / again rotates the cookie (new sid)', async () => {
+  it('calling GET / again reuses the existing session when the cookie is still valid', async () => {
+    // Earlier behaviour rotated the cookie on every GET /, which clashed
+    // with browser prefetchers firing GET / twice in a row and silently
+    // killing the freshly-issued session before the SPA could use it.
     app = makeApp();
 
     const r1 = await request(app.app).get('/');
@@ -39,7 +42,7 @@ describe('Session lifecycle', () => {
 
     expect(sid1).toBeDefined();
     expect(sid2).toBeDefined();
-    expect(sid1).not.toBe(sid2);
+    expect(sid1).toBe(sid2);
   });
 
   it('POST /api/reset destroys session: subsequent GET /api/state returns 440', async () => {
