@@ -3,6 +3,8 @@ import fsp from 'fs/promises';
 import path from 'path';
 import { loadConfig } from './config';
 import { createApp } from './app';
+import { loadKev } from './kev';
+import { loadEpss } from './epss';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -62,6 +64,12 @@ async function main(): Promise<void> {
       'listening'
     );
   });
+
+  // KEV- + EPSS-Datenbanken im Hintergrund laden (non-blocking, graceful
+  // failure). Bewusst hier im Boot-Entry und nicht in createApp(), damit die
+  // Test-Suite (die createApp() direkt nutzt) keine Netz-Downloads auslöst.
+  loadKev().catch(() => {});
+  loadEpss().catch(() => {});
 
   let shuttingDown = false;
 

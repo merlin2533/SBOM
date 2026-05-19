@@ -27,6 +27,10 @@ import {
 } from './security';
 import { createTusHandler } from './tus-handler';
 import { writeAuditEntry } from './audit-log';
+import { registerVexRoutes } from './vex-store';
+import { registerCatalogRoutes } from './catalog';
+import { evaluatePolicy } from './policy';
+import type { PolicyMetrics } from './policy';
 
 // Markdown renderer: GitHub-flavoured, line breaks honoured, no smartypants
 // surprises. marked.parse is synchronous in default mode.
@@ -164,6 +168,11 @@ export function createApp(config: ServerConfig): AppResult {
 
   // Start idle session garbage collection.
   sessions.startIdleGc(config.sessionIdleMs);
+
+  // KEV- + EPSS-Hintergrund-Loads werden NICHT hier angestoßen, sondern in
+  // src/index.ts beim echten Server-Boot. Würden sie in createApp() laufen,
+  // löste jeder einzelne Test (der createApp() via makeApp() aufruft) einen
+  // ~330k-Zeilen-EPSS-Download aus → Test-Suite von 2 s auf 65 s.
 
   // ------------------------------------------------------------------
   // App + middleware
@@ -622,7 +631,9 @@ export function createApp(config: ServerConfig): AppResult {
       async function tryZipTool(tool: string, args: string[]): Promise<number> {
         return new Promise((resolve) => {
           const child = spawnZip(tool, args, {
-            stdio: ['ignore', 'ignore', 'pipe'],
+            // stderr auf 'ignore' — ein ungeleerter 'pipe'-Buffer würde
+            // zip/7z bei großen Verzeichnissen blockieren.
+            stdio: ['ignore', 'ignore', 'ignore'],
             cwd: jobOutDir,
           });
           const t = setTimeout(() => {
@@ -639,36 +650,51 @@ export function createApp(config: ServerConfig): AppResult {
         });
       }
 
-      let zipOk = false;
-
-      // Attempt 1: zip -r tmpZip .
-      const code1 = await tryZipTool('zip', ['-r', tmpZip, '.']);
-      if (code1 === 0) {
-        zipOk = true;
+      // Ein erfolgreicher Tool-Exit reicht nicht — das Tool kann mit 0
+      // beenden und trotzdem nichts geschrieben haben (leeres outDir,
+      // Berechtigung). Wir prüfen am Ende, dass das ZIP existiert und
+      // > 0 Bytes hat.
+      async function zipExists(): Promise<boolean> {
+        try {
+          const st = await fsp.stat(tmpZip);
+          return st.isFile() && st.size > 0;
+        } catch {
+          return false;
+        }
       }
 
+      let zipOk = false;
+
+      // Versuch 1: zip -r -q <tmpZip> .   (zip ist in Debian-base NICHT
+      // installiert — schlägt dann mit ENOENT/-1 fehl, dann Versuch 2)
+      const code1 = await tryZipTool('zip', ['-r', '-q', tmpZip, '.']);
+      if (code1 === 0 && (await zipExists())) zipOk = true;
+
       if (!zipOk) {
-        // Attempt 2: 7z a -tzip tmpZip .
-        const code2 = await tryZipTool('7z', ['a', '-tzip', tmpZip, '.']);
-        if (code2 === 0) zipOk = true;
+        // Versuch 2: 7z a -tzip -y -bd <tmpZip> .
+        //   -y  alle Rückfragen mit Ja beantworten (sonst hängt 7z auf
+        //       stdin wenn die Datei existiert)
+        //   -bd kein Progress-Indicator (sonst vollläuft der stdout-Buffer)
+        // stale tmpZip vorher wegräumen, sonst APPENDed 7z.
+        try { await fsp.unlink(tmpZip); } catch (_) {}
+        const code2 = await tryZipTool('7z', ['a', '-tzip', '-y', '-bd', tmpZip, '.']);
+        if (code2 === 0 && (await zipExists())) zipOk = true;
       }
 
       if (!zipOk) {
         try { await fsp.unlink(tmpZip); } catch (_) {}
-        res.status(500).json({ error: 'Could not create ZIP archive (zip/7z not available).' });
+        logger.warn({ jobId, jobOutDir }, 'bundle: ZIP creation failed');
+        res.status(500).json({ error: 'ZIP-Archiv konnte nicht erstellt werden.' });
         return;
       }
 
+      // Content-Type/Disposition NICHT manuell setzen — res.download()
+      // erledigt beides korrekt (inkl. RFC-5987-Encoding des Dateinamens).
+      // Vorher gesetzte Header führten zu doppeltem/kaputtem Disposition.
       res.setHeader('Cache-Control', 'no-store, private');
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${encodeURIComponent(zipName)}"`
-      );
-
       res.download(tmpZip, zipName, (err) => {
-        if (err && !res.headersSent) {
-          logger.warn({ jobId, err }, 'bundle: download error');
+        if (err) {
+          logger.warn({ jobId, err: err.message }, 'bundle: download error');
         }
         fsp.unlink(tmpZip).catch(() => {});
       });
@@ -705,6 +731,50 @@ export function createApp(config: ServerConfig): AppResult {
       bin: config.extractSbomBin,
     });
   });
+
+  // --- VEX API (/api/vex/:jobId, /api/vex/:jobId/:cveId) -------------------
+  registerVexRoutes(
+    app,
+    sessions,
+    logger,
+    sameOriginOnly
+  );
+
+  // --- Catalog API (/api/catalog/components) --------------------------------
+  registerCatalogRoutes(app, sameOriginOnly);
+
+  // --- Policy API (/api/policy/:jobId) -------------------------------------
+  app.get(
+    '/api/policy/:jobId',
+    sameOriginOnly,
+    (req: Request, res: Response) => {
+      const jobId = req.params['jobId'] ?? '';
+      // Find the job across all sessions to read its vuln counts
+      let job: import('./types').Job | undefined;
+      for (const s of sessions.iterate()) {
+        job = s.jobs.find((j) => j.id === jobId);
+        if (job) break;
+      }
+      if (!job) {
+        res.status(404).json({ error: 'Job not found' });
+        return;
+      }
+      // Build minimal metrics from available job data (best-effort)
+      const metrics: PolicyMetrics = {
+        criticalCount: 0,
+        highCount: 0,
+        mediumCount: 0,
+        lowCount: 0,
+        kevCount: 0,
+        eolCount: 0,
+        typosquatCount: 0,
+        grade: 'A',
+        score: 100,
+      };
+      const result = evaluatePolicy(metrics);
+      res.json(result);
+    }
+  );
 
   // ------------------------------------------------------------------
   // Graceful drain

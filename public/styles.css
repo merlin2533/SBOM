@@ -1019,6 +1019,56 @@ footer em {
   font-weight: 600;
   color: var(--fg-soft);
 }
+footer p { margin: 0 auto 1rem; max-width: 720px; }
+
+/* Transparenz-Streifen: welche Open-Source-Tools die App benutzt */
+.tools-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: .3rem .35rem;
+  font-size: .73rem;
+  padding: .5rem 0;
+  line-height: 1.4;
+}
+.tools-strip .tools-label {
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-right: .3rem;
+  font-size: .68rem;
+}
+.tools-strip a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 500;
+  padding: .15rem .45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  transition: background .12s var(--ease), border-color .12s var(--ease);
+}
+.tools-strip a:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.tools-strip .tools-sep {
+  color: var(--muted);
+  opacity: .5;
+  font-size: .7rem;
+  user-select: none;
+}
+.tools-strip.muted a {
+  color: var(--muted);
+  border-style: dashed;
+  background: transparent;
+}
+.tools-strip.muted a:hover {
+  color: var(--accent);
+  border-style: solid;
+}
 
 /* ============================================================================
    Toast
