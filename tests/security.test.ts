@@ -62,7 +62,7 @@ describe('Session cookie', () => {
     const sidCookie = cookies.find((c) => c.startsWith('sid='));
     expect(sidCookie).toBeDefined();
     expect(sidCookie!.toLowerCase()).toContain('httponly');
-    expect(sidCookie!.toLowerCase()).toContain('samesite=strict');
+    expect(sidCookie!.toLowerCase()).toContain('samesite=lax');
     expect(sidCookie!.toLowerCase()).toContain('path=/');
   });
 });

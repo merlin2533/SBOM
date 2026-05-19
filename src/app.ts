@@ -245,7 +245,12 @@ export function createApp(config: ServerConfig): AppResult {
     const sess = sessions.create();
     res.cookie('sid', sess.sid, {
       httpOnly: true,
-      sameSite: 'strict',
+      // SameSite=Lax keeps the cookie out of cross-site form-POSTs (the real
+      // CSRF concern) but unlike Strict it survives reverse-proxy/tunnel
+      // setups where the browser perceives the page as a slightly different
+      // origin from the API. Every state-changing /api/* route is still gated
+      // through the Sec-Fetch-Site check, so we keep defence in depth.
+      sameSite: 'lax',
       secure: !!req.secure,
       path: '/',
     });
