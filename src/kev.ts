@@ -64,12 +64,24 @@ async function loadCacheFile(): Promise<unknown | null> {
 
 // ── HTTP fetch (Node stdlib only) ─────────────────────────────────────────────
 
-function fetchJson(url: string): Promise<unknown> {
+function fetchJson(url: string, redirectsLeft = 5): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { timeout: 30_000 }, (res) => {
-      if (res.statusCode !== 200) {
+      const status = res.statusCode ?? 0;
+      // Redirects von Hand folgen — https.get tut das nicht automatisch.
+      if (status >= 300 && status < 400 && res.headers.location) {
         res.resume();
-        reject(new Error(`KEV fetch HTTP ${res.statusCode}`));
+        if (redirectsLeft <= 0) {
+          reject(new Error('KEV fetch: too many redirects'));
+          return;
+        }
+        const next = new URL(res.headers.location, url).toString();
+        resolve(fetchJson(next, redirectsLeft - 1));
+        return;
+      }
+      if (status !== 200) {
+        res.resume();
+        reject(new Error(`KEV fetch HTTP ${status}`));
         return;
       }
       const chunks: Buffer[] = [];

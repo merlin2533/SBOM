@@ -19,6 +19,17 @@ import { writeOpenVex } from './openvex';
 import { writeCsaf } from './csaf';
 import { writeSlsa } from './slsa';
 import { signWithCosign } from './cosign';
+import { isKev, kevEntry } from './kev';
+import type { KevDetails } from './kev';
+import { epssFor } from './epss';
+import type { EpssScore } from './epss';
+import { lookupEol } from './eol';
+import { detectTyposquat } from './typosquat';
+import { evaluatePolicy } from './policy';
+import { writeSiemExport, buildFindings } from './siem';
+import { mergeVexIntoFile } from './vex-store';
+import { writeComplianceReports } from './compliance';
+import { upsertCatalog } from './catalog';
 
 export interface EnqueueOpts {
   uploadPath: string;
@@ -361,6 +372,105 @@ export class JobRunner {
               );
             }
 
+            // ── Enterprise pre-processing (synchronous lookups) ───────────────
+
+            // Parse grype matches for enterprise lookups
+            let grypeMatchesForEnterprise: Array<{
+              id: string; severity: string; pkgName: string; pkgVersion: string;
+              pkgType: string; pkgPurl?: string;
+              fixVersion?: string; description?: string;
+            }> = [];
+            if (vr.ranGrype && vr.jsonPath) {
+              try {
+                const grypeRaw = JSON.parse(await fsp.readFile(vr.jsonPath!, 'utf8')) as {
+                  matches?: Array<{
+                    vulnerability?: {
+                      id?: string; severity?: string;
+                      fix?: { versions?: string[] }; description?: string;
+                    };
+                    artifact?: { name?: string; version?: string; type?: string; purl?: string };
+                  }>;
+                };
+                grypeMatchesForEnterprise = (grypeRaw.matches ?? []).map((m) => ({
+                  id: m.vulnerability?.id ?? '',
+                  severity: m.vulnerability?.severity ?? 'Unknown',
+                  pkgName: m.artifact?.name ?? '',
+                  pkgVersion: m.artifact?.version ?? '',
+                  pkgType: m.artifact?.type ?? '',
+                  pkgPurl: m.artifact?.purl,
+                  fixVersion: m.vulnerability?.fix?.versions?.join(', '),
+                  description: m.vulnerability?.description?.slice(0, 512),
+                }));
+              } catch { /* graceful */ }
+            }
+
+            // Parse CDX components for EOL + typosquat
+            let cdxComponents: Array<{ name: string; version?: string; type?: string; purl?: string }> = [];
+            try {
+              const cdxRaw = JSON.parse(await fsp.readFile(cdxPath, 'utf8')) as {
+                components?: Array<{ name?: string; version?: string; type?: string; purl?: string }>;
+              };
+              cdxComponents = (cdxRaw.components ?? []).map((c) => ({
+                name: c.name ?? '',
+                version: c.version,
+                type: c.type,
+                purl: c.purl,
+              }));
+            } catch { /* graceful */ }
+
+            // 1. EOL Detection
+            const eolHits: Array<{ name: string; version: string; info: import('./eol').EolInfo }> = [];
+            for (const comp of cdxComponents) {
+              if (!comp.name || !comp.version) continue;
+              const info = lookupEol(comp.name, comp.version);
+              if (info) eolHits.push({ name: comp.name, version: comp.version, info });
+            }
+            if (eolHits.length > 0) {
+              this.sessions.pushLog(sess, job, 'stdout',
+                `[eol] ${eolHits.length} EOL-Komponente(n) gefunden`);
+            }
+
+            // 2. Typosquat Detection
+            const typosquatHits = detectTyposquat(
+              cdxComponents.map((c) => ({ name: c.name, type: c.type }))
+            );
+            if (typosquatHits.length > 0) {
+              this.sessions.pushLog(sess, job, 'stdout',
+                `[typosquat] ${typosquatHits.length} mögliche(r) Typosquat(s)`);
+            }
+
+            // 3. KEV + 4. EPSS lookups
+            const kevMapForReport = new Map<string, KevDetails>();
+            const epssMapForReport = new Map<string, EpssScore>();
+            for (const m of grypeMatchesForEnterprise) {
+              if (!m.id) continue;
+              const ke = kevEntry(m.id);
+              if (ke) kevMapForReport.set(m.id.toUpperCase(), ke);
+              const es = epssFor(m.id);
+              if (es) epssMapForReport.set(m.id.toUpperCase(), es);
+            }
+            const kevCount = kevMapForReport.size;
+            if (kevCount > 0) {
+              this.sessions.pushLog(sess, job, 'stdout',
+                `[kev] ${kevCount} CVE(s) in CISA KEV-Liste`);
+            }
+
+            // 5. Policy Evaluation
+            const policyMetrics = {
+              criticalCount: vr.counts['Critical'] ?? 0,
+              highCount: vr.counts['High'] ?? 0,
+              mediumCount: vr.counts['Medium'] ?? 0,
+              lowCount: vr.counts['Low'] ?? 0,
+              kevCount,
+              eolCount: eolHits.length,
+              typosquatCount: typosquatHits.length,
+              grade: 'A', // will be filled after summary, placeholder
+              score: 100,
+            };
+            const policyResult = evaluatePolicy(policyMetrics);
+            this.sessions.pushLog(sess, job, 'stdout',
+              `[policy] ${policyResult.passed ? 'bestanden' : 'NICHT bestanden'} (${policyResult.results.filter((r) => r.triggered).length} Regeln ausgelöst)`);
+
             // 2. Kombinierter Gesamtübersicht-Bericht (Komponenten + CVEs +
             //    Lizenzen + Restrisiken in einem HTML).
             const reportMd = entries.find((n) => /\.report\.md$/i.test(n));
@@ -372,6 +482,11 @@ export class JobRunner {
               inputName: job.inputName,
               jobId: job.id,
               logger: this.logger,
+              kevMap: kevMapForReport,
+              epssMap: epssMapForReport,
+              eolHits,
+              typosquatHits,
+              policyResult,
             });
             if (summaryRes.htmlPath) {
               this.sessions.pushLog(
@@ -465,7 +580,76 @@ export class JobRunner {
               this.logger.warn({ jobId: job.id, err: e }, 'slsa: generation failed (non-fatal)');
             }
 
-            // 8. Cosign Signing (optional, only if env keys set)
+            // 8. SIEM Export
+            try {
+              const siemFindings = buildFindings({
+                timestamp: new Date().toISOString(),
+                artifact: job.inputName,
+                artifactSha256: job.inputSha256,
+                jobId: job.id,
+                vulnMatches: grypeMatchesForEnterprise.map((m) => ({
+                  ...m,
+                  isKev: isKev(m.id),
+                  epss: epssFor(m.id)?.score,
+                  epssPercentile: epssFor(m.id)?.percentile,
+                })),
+                eolHits: eolHits.map(({ name, version, info }) => ({
+                  name, version, eolDate: info.eolDate, isExpired: info.isExpired,
+                })),
+                typosquatHits,
+              });
+              await writeSiemExport({
+                outDir: job.outDir,
+                inputName: job.inputName,
+                inputSha256: job.inputSha256,
+                jobId: job.id,
+                findings: siemFindings,
+                logger: this.logger,
+              });
+            } catch (e) {
+              this.logger.warn({ jobId: job.id, err: e }, 'siem: export failed (non-fatal)');
+            }
+
+            // 9. Compliance Reports
+            try {
+              const base = path.basename(cdx).replace(/\.cdx\.json$/i, '');
+              await writeComplianceReports({
+                outDir: job.outDir,
+                inputName: job.inputName,
+                jobId: job.id,
+                cdxBasename: base,
+                inputSha256: job.inputSha256,
+                componentCount: summaryRes.componentCount,
+                vulnTotal: summaryRes.vulnTotal,
+                criticalCount: vr.counts['Critical'] ?? 0,
+                highCount: vr.counts['High'] ?? 0,
+                kevCount,
+                eolCount: eolHits.length,
+                typosquatCount: typosquatHits.length,
+                policyResult,
+                logger: this.logger,
+              });
+              this.sessions.pushLog(sess, job, 'stdout', '[compliance] 4 Compliance-Vorlagen erstellt');
+            } catch (e) {
+              this.logger.warn({ jobId: job.id, err: e }, 'compliance: failed (non-fatal)');
+            }
+
+            // 10. VEX Merge (apply any pre-existing VEX entries into vex.json)
+            try {
+              const vexJsonName = entries.find((n) => /\.vex\.json$/i.test(n));
+              if (vexJsonName) {
+                await mergeVexIntoFile(
+                  path.join(job.outDir, vexJsonName),
+                  job.inputSha256,
+                  job.id,
+                  this.logger
+                );
+              }
+            } catch (e) {
+              this.logger.warn({ jobId: job.id, err: e }, 'vex-store: merge failed (non-fatal)');
+            }
+
+            // 11. Cosign Signing (optional, only if env keys set)
             try {
               const allEntries = await fsp.readdir(job.outDir);
               const filesToSign = allEntries
@@ -474,6 +658,30 @@ export class JobRunner {
               await signWithCosign({ filesToSign, outDir: job.outDir, logger: this.logger });
             } catch (e) {
               this.logger.warn({ jobId: job.id, err: e }, 'cosign: signing failed (non-fatal)');
+            }
+
+            // 12. Catalog Upsert
+            try {
+              upsertCatalog({
+                jobId: job.id,
+                components: cdxComponents.map((c) => ({
+                  name: c.name,
+                  type: c.type ?? 'unknown',
+                  version: c.version,
+                  purl: c.purl,
+                })),
+                cves: grypeMatchesForEnterprise.map((m) => ({
+                  id: m.id,
+                  pkgName: m.pkgName,
+                  pkgVersion: m.pkgVersion,
+                  pkgType: m.pkgType,
+                  pkgPurl: m.pkgPurl,
+                  severity: m.severity,
+                })),
+                logger: this.logger,
+              });
+            } catch (e) {
+              this.logger.warn({ jobId: job.id, err: e }, 'catalog: upsert failed (non-fatal)');
             }
           }
         } catch (e) {

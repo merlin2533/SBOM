@@ -71,12 +71,25 @@ async function loadCacheFile(): Promise<Map<string, EpssScore> | null> {
 
 // ── HTTP fetch with gunzip ────────────────────────────────────────────────────
 
-function fetchGzipBuffer(url: string): Promise<Buffer> {
+function fetchGzipBuffer(url: string, redirectsLeft = 5): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { timeout: 60_000 }, (res) => {
-      if (res.statusCode !== 200) {
+      const status = res.statusCode ?? 0;
+      // EPSS (epss.cyentia.com) leitet permanent auf ein CDN um — Node's
+      // https.get folgt Redirects NICHT von selbst, also hier von Hand.
+      if (status >= 300 && status < 400 && res.headers.location) {
         res.resume();
-        reject(new Error(`EPSS fetch HTTP ${res.statusCode}`));
+        if (redirectsLeft <= 0) {
+          reject(new Error('EPSS fetch: too many redirects'));
+          return;
+        }
+        const next = new URL(res.headers.location, url).toString();
+        resolve(fetchGzipBuffer(next, redirectsLeft - 1));
+        return;
+      }
+      if (status !== 200) {
+        res.resume();
+        reject(new Error(`EPSS fetch HTTP ${status}`));
         return;
       }
       const chunks: Buffer[] = [];

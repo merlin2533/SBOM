@@ -9,6 +9,11 @@
 import fsp from 'fs/promises';
 import path from 'path';
 import type pino from 'pino';
+import type { KevDetails } from './kev';
+import type { EpssScore } from './epss';
+import type { EolInfo } from './eol';
+import type { TyposquatHit } from './typosquat';
+import type { PolicyResult } from './policy';
 
 export interface SummaryOpts {
   cdxJsonPath: string;
@@ -18,6 +23,12 @@ export interface SummaryOpts {
   inputName: string;
   jobId: string;
   logger: pino.Logger;
+  // Enterprise data (optional — graceful degradation when absent)
+  kevMap?: Map<string, KevDetails>;      // CVE-ID → KEV details
+  epssMap?: Map<string, EpssScore>;     // CVE-ID → EPSS score
+  eolHits?: Array<{ name: string; version: string; info: EolInfo }>;
+  typosquatHits?: TyposquatHit[];
+  policyResult?: PolicyResult | null;
 }
 
 export interface SummaryResult {
@@ -93,6 +104,11 @@ interface RatingInput {
   proprietary: number;
   unknownLicense: number;
   hasResidualRisk: boolean;
+  // Enterprise penalties
+  kevCount?: number;
+  eolCount?: number;
+  typosquatCount?: number;
+  policyFailed?: boolean;
 }
 
 interface RatingResult {
@@ -169,6 +185,27 @@ function computeRating(r: RatingInput): RatingResult {
   if (r.hasResidualRisk) {
     score -= 5;
     reasons.push('Audit-Report meldet Restrisiken / übersprungene Inhalte (−5)');
+  }
+
+  // ── Enterprise penalties ─────────────────────────────────────────────────
+  if (r.kevCount && r.kevCount > 0) {
+    const kevPenalty = Math.min(r.kevCount * 15, 30);
+    score -= kevPenalty;
+    reasons.push(`${r.kevCount} CISA KEV-Treffer (aktiv ausgenutzt) (−${kevPenalty})`);
+  }
+  if (r.eolCount && r.eolCount > 0) {
+    const eolPenalty = Math.min(r.eolCount * 5, 20);
+    score -= eolPenalty;
+    reasons.push(`${r.eolCount} EOL-Komponente${r.eolCount === 1 ? '' : 'n'} (−${eolPenalty})`);
+  }
+  if (r.typosquatCount && r.typosquatCount > 0) {
+    const tsPenalty = Math.min(r.typosquatCount * 10, 20);
+    score -= tsPenalty;
+    reasons.push(`${r.typosquatCount} mögliche${r.typosquatCount === 1 ? 'r Typosquat' : ' Typosquats'} (−${tsPenalty})`);
+  }
+  if (r.policyFailed) {
+    score -= 20;
+    reasons.push('Policy verletzt (−20)');
   }
 
   score = Math.max(0, Math.min(100, Math.round(score)));
@@ -253,6 +290,33 @@ function cveAgeChip(id: string | undefined | null): string {
   if (!a) return '';
   return `<span class="cve-age" title="CVE-Jahr: ${a.year}"
     style="background:${a.color.bg};color:${a.color.fg};border-color:${a.color.border}">${a.label}</span>`;
+}
+
+function kevBadge(id: string | undefined | null, kevMap: Map<string, KevDetails>): string {
+  if (!id) return '';
+  const entry = kevMap.get(id.toUpperCase());
+  if (!entry) return '';
+  const tooltip = [
+    entry.vendor ? `Vendor: ${entry.vendor}` : '',
+    entry.product ? `Product: ${entry.product}` : '',
+    entry.dateAdded ? `Added: ${entry.dateAdded}` : '',
+    entry.dueDate ? `Due: ${entry.dueDate}` : '',
+    entry.ransomwareUse ? `Ransomware: ${entry.ransomwareUse}` : '',
+  ].filter(Boolean).join(' | ');
+  return `<span class="kev-badge" title="${escapeHtml(tooltip)}">🚨 KEV</span>`;
+}
+
+function epssChip(id: string | undefined | null, epssMap: Map<string, import('./epss').EpssScore>): string {
+  if (!id) return '';
+  const e = epssMap.get(id.toUpperCase());
+  if (!e) return '';
+  const pct = Math.round(e.percentile * 100);
+  let bg: string, fg: string, border: string;
+  if (e.score >= 0.5) { bg = '#fee2e2'; fg = '#7f1d1d'; border = '#b91c1c'; }
+  else if (e.score >= 0.1) { bg = '#ffedd5'; fg = '#9a3412'; border = '#ea580c'; }
+  else { bg = '#f3f4f6'; fg = '#4b5563'; border = '#9ca3af'; }
+  return `<span class="epss-chip" title="EPSS probability of exploitation"
+    style="background:${bg};color:${fg};border-color:${border}">EPSS ${e.score.toFixed(2)} (P${pct})</span>`;
 }
 
 function escapeHtml(s: string): string {
@@ -392,7 +456,14 @@ function renderMarkdownLite(md: string): string {
 }
 
 export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResult> {
-  const { cdxJsonPath, grypeJsonPath, reportMdPath, outDir, inputName, jobId, logger } = opts;
+  const {
+    cdxJsonPath, grypeJsonPath, reportMdPath, outDir, inputName, jobId, logger,
+    kevMap = new Map(),
+    epssMap = new Map(),
+    eolHits = [],
+    typosquatHits = [],
+    policyResult = null,
+  } = opts;
 
   // CycloneDX laden
   let cdx: CdxDoc;
@@ -459,6 +530,26 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
     </span>`;
   }).join(' ');
 
+  // KEV counter
+  const kevMatchCount = matches.filter((m) => kevMap.has((m.vulnerability?.id ?? '').toUpperCase())).length;
+  const kevChip = kevMatchCount > 0
+    ? `<span class="chip" style="background:#fee2e2;color:#7f1d1d;border-color:#b91c1c;font-weight:800">🚨 KEV: <strong>${kevMatchCount}</strong></span>`
+    : '';
+
+  // Policy banner
+  const policyBannerHtml = policyResult
+    ? (() => {
+        const anyFail = !policyResult.passed;
+        const anyWarn = policyResult.results.some((r) => r.triggered && r.action === 'warn');
+        if (anyFail) {
+          return `<div class="policy-banner policy-fail">⛔ Policy verletzt — Freigabe nicht empfohlen</div>`;
+        } else if (anyWarn) {
+          return `<div class="policy-banner policy-warn">⚠️ Policy-Warnung — Befunde prüfen</div>`;
+        }
+        return `<div class="policy-banner policy-ok">✅ Policy bestanden</div>`;
+      })()
+    : '';
+
   // ── Lizenzen ────────────────────────────────────────────────────────────────
   const licenseByCategory: Record<LicenseCategory, CdxComponent[]> = {
     permissive: [], 'weak-copyleft': [], 'strong-copyleft': [], proprietary: [], unknown: [],
@@ -483,6 +574,12 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
     proprietary:    licenseByCategory['proprietary'].length,
     unknownLicense: licenseByCategory['unknown'].length,
     hasResidualRisk: residualRisk != null && residualRisk.length > 50,
+    kevCount: kevMap.size > 0
+      ? matches.filter((m) => kevMap.has((m.vulnerability?.id ?? '').toUpperCase())).length
+      : 0,
+    eolCount: eolHits.length,
+    typosquatCount: typosquatHits.length,
+    policyFailed: policyResult ? !policyResult.passed : false,
   });
 
   const licenseChips = LICENSE_CATEGORY_ORDER.map((cat) => {
@@ -595,7 +692,7 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
       const anchorId = `cve-${(v.id ?? 'unknown').replace(/[^a-zA-Z0-9-]/g, '-')}`;
       return `
         <tr id="${anchorId}">
-          <td class="mono small">${cveId}${cveAgeChip(v.id)}</td>
+          <td class="mono small">${cveId}${cveAgeChip(v.id)}${kevBadge(v.id, kevMap)}${epssChip(v.id, epssMap)}</td>
           <td>
             <strong>${escapeHtml(a.name ?? '?')}</strong>
             <span class="muted small">@${escapeHtml(a.version ?? '?')}</span>
@@ -632,13 +729,14 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
   }).join('\n');
 
   // ── A.1 Top-5-Risiken-Karte ─────────────────────────────────────────────────
-  // Priorität: Critical+Fix > Critical ohne Fix > High+Fix > High ohne Fix > Medium
+  // Priorität: KEV > Critical+Fix > Critical ohne Fix > High+Fix > High ohne Fix > Medium
   function topRiskScore(m: GrypeMatch): number {
     const sev = normalizeSeverity(m.vulnerability?.severity);
     const hasFix = (m.vulnerability?.fix?.versions?.length ?? 0) > 0 ? 1 : 0;
     const cvss = m.vulnerability?.cvss?.[0]?.metrics?.baseScore ?? 0;
     const sevRank: Record<Severity, number> = { Critical: 1000, High: 500, Medium: 100, Low: 10, Negligible: 1, Unknown: 0 };
-    return sevRank[sev] * 10 + hasFix * 5 + cvss;
+    const isKev = kevMap.has((m.vulnerability?.id ?? '').toUpperCase()) ? 10000 : 0;
+    return isKev + sevRank[sev] * 10 + hasFix * 5 + cvss;
   }
 
   const topRiskMatches = matches
@@ -664,7 +762,7 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
       return `<tr style="cursor:pointer" onclick="document.getElementById('${anchorId}')&&(document.getElementById('${anchorId}').closest('details')||document.body).setAttribute('open',''),document.getElementById('${anchorId}')?.closest('details')?.setAttribute('open',''),document.getElementById('${anchorId}')?.scrollIntoView({behavior:'smooth',block:'center'})">
         <td class="mono small">
           <a href="#${anchorId}" onclick="event.stopPropagation()">${escapeHtml(cveId)}</a>
-          ${cveAgeChip(cveId)}
+          ${cveAgeChip(cveId)}${kevBadge(cveId, kevMap)}${epssChip(cveId, epssMap)}
         </td>
         <td><span class="sev-badge" style="background:${c.border};color:#fff;font-size:.72rem;padding:.15rem .5rem;border-radius:999px">${sev}</span></td>
         <td class="mono small">${escapeHtml(a.name ?? '?')}@${escapeHtml(a.version ?? '?')}</td>
@@ -786,6 +884,71 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
       </details>`
     : '';
 
+  // ── EOL Section ──────────────────────────────────────────────────────────────
+  const eolHtml = eolHits.length === 0 ? '' : (() => {
+    const today = new Date();
+    const rows = eolHits.map(({ name, version, info }) => {
+      const daysLeft = info.daysUntilEol;
+      let statusHtml: string;
+      if (info.isExpired) {
+        statusHtml = `<span style="color:#b91c1c;font-weight:700">Abgelaufen</span>`;
+      } else if (daysLeft !== undefined && daysLeft < 90) {
+        statusHtml = `<span style="color:#d97706;font-weight:700">In ${daysLeft} Tagen</span>`;
+      } else {
+        const years = daysLeft !== undefined ? (daysLeft / 365).toFixed(1) : '?';
+        statusHtml = `<span style="color:#6b7280">Noch ${years} Jahre</span>`;
+      }
+      return `<tr>
+        <td><strong>${escapeHtml(name)}</strong></td>
+        <td class="mono small">${escapeHtml(version)}</td>
+        <td class="mono small">${escapeHtml(info.eolDate)}</td>
+        <td>${statusHtml}</td>
+      </tr>`;
+    }).join('');
+    return `
+      <details class="group eol-group" open>
+        <summary>
+          <span class="caret" aria-hidden="true">▸</span>
+          <span class="group-name">⏰ End-of-Life</span>
+          <span class="group-count">${eolHits.length} Treffer</span>
+        </summary>
+        <div class="group-body">
+          <table>
+            <thead><tr><th>Komponente</th><th>Version</th><th>EOL-Datum</th><th>Status</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </details>`;
+    // suppress unused variable warning
+    void today;
+  })();
+
+  // ── Typosquat Section ────────────────────────────────────────────────────────
+  const typosquatHtml = typosquatHits.length === 0 ? '' : (() => {
+    const rows = typosquatHits.map(({ name, suspiciousOf, distance }) => `<tr>
+      <td class="mono small"><strong>${escapeHtml(name)}</strong></td>
+      <td class="mono small">${escapeHtml(suspiciousOf)}</td>
+      <td class="mono small">${distance}</td>
+    </tr>`).join('');
+    return `
+      <div class="typosquat-banner">
+        ⚠️ Mögliche Typosquats oder Dependency-Confusion-Kandidaten gefunden — manuelle Prüfung empfohlen!
+      </div>
+      <details class="group typosquat-group" open>
+        <summary>
+          <span class="caret" aria-hidden="true">▸</span>
+          <span class="group-name">⚠️ Mögliche Typosquats</span>
+          <span class="group-count">${typosquatHits.length} Treffer</span>
+        </summary>
+        <div class="group-body">
+          <table>
+            <thead><tr><th>Paket</th><th>Ähnlich zu</th><th>Levenshtein</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </details>`;
+  })();
+
   const componentCvesJson = JSON.stringify(componentCvesMap);
 
   const html = `<!doctype html>
@@ -869,6 +1032,9 @@ tr:last-child td{border-bottom:0}
 .markdown-body code{background:var(--accent-soft);color:var(--accent);padding:.06em .35em;border-radius:4px;font-size:.88em}
 footer.summary{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);
 color:var(--muted);font-size:.82rem;line-height:1.7}
+.tools-credit{margin-top:.6rem;font-size:.76rem;line-height:1.65}
+.tools-credit a{color:var(--accent);text-decoration:none;font-weight:500}
+.tools-credit a:hover{text-decoration:underline}
 .ok-banner{margin:1rem 0;padding:.8rem 1rem;border-radius:10px;
 background:#ecfccb;color:#365314;border:1px solid #65a30d;font-weight:600}
 @media (prefers-color-scheme:dark){.ok-banner{background:#172d10;color:#a3e635;border-color:#4d7c0f}}
@@ -890,6 +1056,25 @@ border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
 font-weight:600;border-radius:999px;border:1px solid currentColor;
 font-family:"Inter",ui-sans-serif,system-ui,sans-serif;vertical-align:middle;
 line-height:1.4;letter-spacing:0;white-space:nowrap}
+.kev-badge{display:inline-block;margin-left:.35rem;padding:.05rem .45rem;font-size:.72rem;
+font-weight:800;border-radius:999px;border:2px solid #b91c1c;background:#fee2e2;color:#7f1d1d;
+vertical-align:middle;line-height:1.4;white-space:nowrap;cursor:help}
+.epss-chip{display:inline-block;margin-left:.3rem;padding:.05rem .4rem;font-size:.72rem;
+font-weight:600;border-radius:999px;border:1px solid currentColor;
+vertical-align:middle;line-height:1.4;white-space:nowrap;cursor:help}
+.policy-banner{margin:0 0 1rem;padding:.8rem 1.1rem;border-radius:10px;font-weight:700;font-size:.96rem}
+.policy-ok{background:#dcfce7;color:#14532d;border:1px solid #15803d}
+.policy-warn{background:#fef9c3;color:#854d0e;border:1px solid #d97706}
+.policy-fail{background:#fee2e2;color:#7f1d1d;border:2px solid #b91c1c}
+@media(prefers-color-scheme:dark){
+  .policy-ok{background:#0d2d1a;color:#4ade80;border-color:#15803d}
+  .policy-warn{background:#2c1f00;color:#fbbf24;border-color:#92400e}
+  .policy-fail{background:#2c0a0a;color:#f87171;border-color:#b91c1c}
+  .kev-badge{background:#2c0a0a;color:#f87171;border-color:#b91c1c}
+}
+.typosquat-banner{margin:.8rem 0;padding:.7rem 1rem;border-radius:8px;
+background:#fff7ed;color:#9a3412;border:1px solid #ea580c;font-weight:600;font-size:.88rem}
+@media(prefers-color-scheme:dark){.typosquat-banner{background:#2c1308;color:#fb923c;border-color:#c2410c}}
 .top-risks-card{border-left:4px solid #b91c1c;background:#fff5f5;border-radius:10px;
 padding:1rem 1.2rem;margin:.8rem 0}
 @media (prefers-color-scheme:dark){.top-risks-card{background:#1c0a0a}}
@@ -961,6 +1146,7 @@ font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:100}
 <body>
 <button class="print-btn" onclick="window.print()">Drucken / PDF</button>
 <main>
+  ${policyBannerHtml}
   <header class="summary">
     <h1>Gesamtübersicht</h1>
     <div class="subline mono">${escapeHtml(inputName)}</div>
@@ -1005,7 +1191,7 @@ font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:100}
         <div class="kv-value mono small">${escapeHtml(rootHash)}</div>
       </div>` : ''}
     </div>
-    ${vulnChips ? `<div class="chips">${vulnChips}</div>` : ''}
+    ${vulnChips || kevChip ? `<div class="chips">${vulnChips}${kevChip}</div>` : ''}
   </header>
 
   <div class="section-title">Komponenten</div>
@@ -1018,6 +1204,9 @@ font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:100}
     ? `<div class="muted">Keine Komponenten — keine Lizenzdaten.</div>`
     : `<div class="chips">${licenseChips}</div>${complianceWarning}${licenseGroupsHtml}`}
 
+  ${eolHits.length > 0 ? `<div class="section-title">⏰ End-of-Life</div>${eolHtml}` : ''}
+  ${typosquatHits.length > 0 ? `<div class="section-title">⚠️ Typosquats</div>${typosquatHtml}` : ''}
+
   <div class="section-title">Schwachstellen</div>
   ${matches.length === 0
     ? `<div class="ok-banner">✓ Keine bekannten Schwachstellen in den katalogisierten Komponenten.</div>`
@@ -1026,8 +1215,16 @@ font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:100}
   ${residualHtml ? `<div class="section-title">Restrisiken</div>${residualHtml}` : ''}
 
   <footer class="summary">
-    Erzeugt ${new Date().toISOString()} · extract-sbom-Output: ${escapeHtml(path.basename(cdxJsonPath))}
-    ${grype ? ` · grype ${escapeHtml(grype.descriptor?.version ?? '?')}${grype.descriptor?.db?.built ? ` · DB ${escapeHtml(grype.descriptor.db.built)}` : ''}` : ''}
+    <div>Erzeugt ${new Date().toISOString()} · extract-sbom-Output: ${escapeHtml(path.basename(cdxJsonPath))}${grype ? ` · grype ${escapeHtml(grype.descriptor?.version ?? '?')}${grype.descriptor?.db?.built ? ` · Vuln-DB ${escapeHtml(grype.descriptor.db.built)}` : ''}` : ''}</div>
+    <div class="tools-credit">
+      Analysiert mit freier Open-Source-Software:
+      <a href="https://github.com/TomTonic/extract-sbom" target="_blank" rel="noopener">extract-sbom</a> (SBOM-Extraktion, BSD-3) ·
+      <a href="https://github.com/anchore/syft" target="_blank" rel="noopener">syft</a> (Komponenten-Katalog, Apache-2) ·
+      <a href="https://github.com/anchore/grype" target="_blank" rel="noopener">grype</a> (CVE-Scan, Apache-2) ·
+      <a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" target="_blank" rel="noopener">CISA KEV</a> ·
+      <a href="https://www.first.org/epss/" target="_blank" rel="noopener">FIRST EPSS</a>.
+      Aufbereitung durch <a href="https://github.com/merlin2533/sbom" target="_blank" rel="noopener">sbom-upload-app</a> (MIT).
+    </div>
   </footer>
 </main>
 <script>

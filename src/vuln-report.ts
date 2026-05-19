@@ -372,7 +372,10 @@ td.pkg{min-width:160px}
 td.desc{max-width:560px}
 td.desc a{color:var(--accent)}
 footer.report{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);
-color:var(--muted);font-size:.82rem}
+color:var(--muted);font-size:.82rem;line-height:1.6}
+.tools-credit{margin-top:.6rem;font-size:.76rem;line-height:1.65}
+.tools-credit a{color:var(--accent);text-decoration:none;font-weight:500}
+.tools-credit a:hover{text-decoration:underline}
 .filter-bar{display:flex;align-items:center;gap:.6rem;padding:.5rem .8rem;
 background:var(--card);border-bottom:1px solid var(--border)}
 .tbl-filter{flex:1;min-width:0;padding:.35rem .6rem;border:1px solid var(--border);
@@ -444,10 +447,14 @@ font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:100}
   ${noFindings}
   ${cardsByGroup}
   <footer class="report">
-    Scanner: ${escapeHtml(grypeDescriptor?.name ?? 'grype')}
-    ${grypeDescriptor?.version ? ` v${escapeHtml(grypeDescriptor.version)}` : ''}
-    ${grypeDescriptor?.db?.built ? ` · Vuln-DB vom ${escapeHtml(grypeDescriptor.db.built)}` : ''}
-    · generiert ${new Date().toISOString()}
+    <div>Scanner: ${escapeHtml(grypeDescriptor?.name ?? 'grype')}${grypeDescriptor?.version ? ` v${escapeHtml(grypeDescriptor.version)}` : ''}${grypeDescriptor?.db?.built ? ` · Vuln-DB vom ${escapeHtml(grypeDescriptor.db.built)}` : ''} · generiert ${new Date().toISOString()}</div>
+    <div class="tools-credit">
+      CVE-Daten: <a href="https://github.com/anchore/grype" target="_blank" rel="noopener">grype</a> (Apache-2)
+      gegen NVD / GHSA / OSV.
+      SBOM-Basis: <a href="https://github.com/TomTonic/extract-sbom" target="_blank" rel="noopener">extract-sbom</a> (BSD-3) +
+      <a href="https://github.com/anchore/syft" target="_blank" rel="noopener">syft</a> (Apache-2).
+      Aufbereitung: <a href="https://github.com/merlin2533/sbom" target="_blank" rel="noopener">sbom-upload-app</a> (MIT).
+    </div>
   </footer>
 </main>
 <script>
