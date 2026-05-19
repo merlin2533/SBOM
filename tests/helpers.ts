@@ -98,6 +98,10 @@ export function makeApp(overrides: Partial<ServerConfig> = {}) {
     logLevel: 'silent',
     logPretty: false,
     sandboxMode: 'none',
+    enrichmentOffline: true,
+    enrichmentCacheDir: tmpdir(),
+    binaryScanMaxBytes: 2 * 1024 * 1024 * 1024,
+    secretScanMaxBytes: 1 * 1024 * 1024 * 1024,
     ...overrides,
   };
   return createApp(config);

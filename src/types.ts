@@ -25,6 +25,13 @@ export interface ServerConfig {
   logLevel: string;
   logPretty: boolean;
   sandboxMode: SandboxMode;
+  // Anreicherungs-Konfiguration (KEV + EPSS)
+  enrichmentOffline: boolean;
+  enrichmentCacheDir: string;
+  // Binär-Scan-Limit
+  binaryScanMaxBytes: number;
+  // Secret-Scan-Limit
+  secretScanMaxBytes: number;
 }
 
 export interface LogEntry {

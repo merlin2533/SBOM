@@ -9,6 +9,9 @@
 ARG NODE_VERSION=20
 ARG GO_VERSION=1.26
 ARG SYFT_VERSION=v1.16.0
+# Versionspins für die zusätzlichen Security-Scanner
+ARG OSV_SCANNER_VERSION=v2.3.8
+ARG GITLEAKS_VERSION=8.30.1
 # Build-time override for the version string displayed in the UI and on
 # /api/health. The GitHub Actions workflow computes
 #   MAJOR.MINOR.<commit_count>+<short_sha>
@@ -66,6 +69,8 @@ RUN npm run build \
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
 ARG SYFT_VERSION
+ARG OSV_SCANNER_VERSION
+ARG GITLEAKS_VERSION
 LABEL org.opencontainers.image.title="sbom-upload-app" \
       org.opencontainers.image.description="Ephemeral web frontend for TomTonic/extract-sbom" \
       org.opencontainers.image.source="https://github.com/merlin2533/sbom" \
@@ -105,6 +110,45 @@ RUN apt-get update \
       -o /usr/local/bin/cosign \
  && chmod +x /usr/local/bin/cosign \
  && rm -rf /var/lib/apt/lists/*
+
+# ────────────────────────────────────────────────────────────────────────────
+# Zusätzliche Security-Scanner für erweiterte Bedrohungsanalyse.
+#
+# Bewusst in einem eigenen, NICHT-FATALEN RUN: schlägt ein Download fehl
+# (neuer Release-Tag, Netzwerkpolicy, Mirror-Ausfall), bricht der Image-Build
+# NICHT ab — die App überspringt den jeweiligen Scanner dank Graceful-
+# Degradation zur Laufzeit einfach. Die Kern-Tools (syft/grype/cosign) oben
+# bleiben dagegen strikt erforderlich.
+# ────────────────────────────────────────────────────────────────────────────
+RUN set -ux; \
+    # trivy: umfassender SBOM-/Container-Scanner von Aqua Security — zweiter
+    # CVE-Engine zur Kreuzvalidierung von grype.
+    ( curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+        | sh -s -- -b /usr/local/bin ) \
+      || echo "WARN: trivy-Installation fehlgeschlagen — Scanner wird zur Laufzeit übersprungen"; \
+    # osv-scanner: Googles OSV-Scanner — erkennt zusätzlich bösartige Pakete
+    # (MAL-* IDs) aus der OSV-Datenbank.
+    ( curl -sSfL "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
+        -o /usr/local/bin/osv-scanner \
+      && chmod +x /usr/local/bin/osv-scanner ) \
+      || echo "WARN: osv-scanner-Installation fehlgeschlagen — Scanner wird zur Laufzeit übersprungen"; \
+    # gitleaks: Secret-Scanner. WICHTIG: Die App schreibt nie den Klartext-
+    # Secret in Ausgabedateien (shredUnlink + Redaction-Logik in secret-scan.ts).
+    ( curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+        -o /tmp/gitleaks.tar.gz \
+      && tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks \
+      && chmod +x /usr/local/bin/gitleaks \
+      && rm -f /tmp/gitleaks.tar.gz ) \
+      || echo "WARN: gitleaks-Installation fehlgeschlagen — Scanner wird zur Laufzeit übersprungen"; \
+    # cve-bin-tool: Intels CVE-Scanner für Binärdateien. In einem Python-venv
+    # isoliert, damit das schlanke Node-Image nicht verschmutzt wird.
+    ( apt-get update \
+      && apt-get install -y --no-install-recommends python3 python3-venv \
+      && python3 -m venv /opt/cve-bin-tool \
+      && /opt/cve-bin-tool/bin/pip install --no-cache-dir cve-bin-tool \
+      && ln -sf /opt/cve-bin-tool/bin/cve-bin-tool /usr/local/bin/cve-bin-tool ) \
+      || echo "WARN: cve-bin-tool-Installation fehlgeschlagen — Scanner wird zur Laufzeit übersprungen"; \
+    rm -rf /var/lib/apt/lists/*
 
 # extract-sbom binary from stage 1.
 COPY --from=go-build /out/extract-sbom /usr/local/bin/extract-sbom

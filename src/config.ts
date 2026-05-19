@@ -42,6 +42,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       ? (sandboxModeRaw as SandboxMode)
       : 'auto';
 
+  // Anreicherungs-Konfiguration (KEV + EPSS)
+  const enrichmentOffline = env['ENRICHMENT_OFFLINE'] === '1';
+  const enrichmentCacheDir =
+    env['ENRICHMENT_CACHE_DIR'] ?? path.join(os.tmpdir(), 'sbom-enrichment');
+
+  // Größen-Limits für Binär- und Secret-Scan
+  const binaryScanMaxBytes = parseInt(
+    env['BINARY_SCAN_MAX_BYTES'] ?? String(2 * 1024 * 1024 * 1024),
+    10
+  );
+  const secretScanMaxBytes = parseInt(
+    env['SECRET_SCAN_MAX_BYTES'] ?? String(1 * 1024 * 1024 * 1024),
+    10
+  );
+
   return {
     port,
     host,
@@ -59,5 +74,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     logLevel,
     logPretty,
     sandboxMode,
+    enrichmentOffline,
+    enrichmentCacheDir,
+    binaryScanMaxBytes,
+    secretScanMaxBytes,
   };
 }

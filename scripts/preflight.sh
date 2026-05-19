@@ -88,6 +88,34 @@ else
   adv_warn "grype not found — vulnerability scanning will be unavailable"
 fi
 
+# ── 6a. trivy (advisory) ──────────────────────────────────────────────────────
+if command -v trivy >/dev/null 2>&1; then
+  adv_ok "trivy available: $(command -v trivy)"
+else
+  adv_warn "trivy not found — supplemental CVE scanning with trivy will be unavailable"
+fi
+
+# ── 6b. osv-scanner (advisory) ────────────────────────────────────────────────
+if command -v osv-scanner >/dev/null 2>&1; then
+  adv_ok "osv-scanner available: $(command -v osv-scanner)"
+else
+  adv_warn "osv-scanner not found — OSV-based CVE/MAL scanning will be unavailable"
+fi
+
+# ── 6c. gitleaks (advisory) ───────────────────────────────────────────────────
+if command -v gitleaks >/dev/null 2>&1; then
+  adv_ok "gitleaks available: $(command -v gitleaks)"
+else
+  adv_warn "gitleaks not found — secret scanning will be unavailable"
+fi
+
+# ── 6d. cve-bin-tool (advisory) ───────────────────────────────────────────────
+if command -v cve-bin-tool >/dev/null 2>&1; then
+  adv_ok "cve-bin-tool available: $(command -v cve-bin-tool)"
+else
+  adv_warn "cve-bin-tool not found — binary CVE analysis will be unavailable"
+fi
+
 # ── 7. Scratch dir writable ───────────────────────────────────────────────────
 SCRATCH="${SCRATCH_DIR:-/tmp/sbom-upload-app}"
 mkdir -p "$SCRATCH" 2>/dev/null || true
