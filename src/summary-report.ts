@@ -37,6 +37,13 @@ const SEVERITY_COLORS: Record<Severity, { fg: string; bg: string; border: string
   Unknown:    { fg: '#4b5563', bg: '#f9fafb', border: '#9ca3af' },
 };
 
+// CycloneDX license shapes:
+//   { license: { id?: string; name?: string } }
+//   { expression: string }
+type CdxLicenseEntry =
+  | { license: { id?: string; name?: string } }
+  | { expression: string };
+
 interface CdxComponent {
   'bom-ref'?: string;
   type?: string;
@@ -45,6 +52,7 @@ interface CdxComponent {
   purl?: string;
   group?: string;
   hashes?: Array<{ alg?: string; content?: string }>;
+  licenses?: CdxLicenseEntry[];
 }
 
 interface CdxDoc {
@@ -97,6 +105,75 @@ function normalizeSeverity(raw: string | undefined): Severity {
   if (s === 'negligible') return 'Negligible';
   return 'Unknown';
 }
+
+// ─── License compliance ──────────────────────────────────────────────────────
+
+type LicenseCategory = 'permissive' | 'weak-copyleft' | 'strong-copyleft' | 'proprietary' | 'unknown';
+
+const LICENSE_CATEGORY_META: Record<LicenseCategory, { label: string; fg: string; bg: string; border: string }> = {
+  permissive:      { label: 'Permissiv',       fg: '#166534', bg: '#dcfce7', border: '#16a34a' },
+  'weak-copyleft': { label: 'Schwaches Copyleft', fg: '#075985', bg: '#e0f2fe', border: '#0369a1' },
+  'strong-copyleft':{ label: 'Starkes Copyleft', fg: '#9a3412', bg: '#ffedd5', border: '#ea580c' },
+  proprietary:     { label: 'Proprietär',       fg: '#991b1b', bg: '#fee2e2', border: '#b91c1c' },
+  unknown:         { label: 'Unbekannt',         fg: '#374151', bg: '#f3f4f6', border: '#6b7280' },
+};
+
+const LICENSE_CATEGORY_ORDER: LicenseCategory[] = [
+  'permissive', 'weak-copyleft', 'strong-copyleft', 'proprietary', 'unknown',
+];
+
+function extractLicenseStrings(comp: CdxComponent): string[] {
+  if (!comp.licenses || comp.licenses.length === 0) return [];
+  const result: string[] = [];
+  for (const entry of comp.licenses) {
+    if ('expression' in entry) {
+      if (entry.expression) result.push(entry.expression);
+    } else if ('license' in entry) {
+      const l = entry.license;
+      const id = l.id?.trim();
+      const name = l.name?.trim();
+      if (id) result.push(id);
+      else if (name) result.push(name);
+    }
+  }
+  return result;
+}
+
+function categorizeLicense(licStr: string): LicenseCategory {
+  const s = licStr.toLowerCase();
+  if (/proprietary|commercial/.test(s)) return 'proprietary';
+  if (/^(agpl|sspl|eupl)/.test(s) || /\bagpl\b/.test(s) || /\bsspl\b/.test(s) || /\beupl\b/.test(s)) return 'strong-copyleft';
+  if (/^gpl/.test(s) || /\bgpl[-v\d]/.test(s) || /gnu general public license/.test(s)) return 'strong-copyleft';
+  if (/^lgpl/.test(s) || /^mpl/.test(s) || /^epl/.test(s) || /^cddl/.test(s) || /^osl-3/.test(s)) return 'weak-copyleft';
+  if (
+    /^mit$/.test(s) ||
+    /^bsd/.test(s) ||
+    /^apache/.test(s) ||
+    /^isc$/.test(s) ||
+    /^zlib$/.test(s) ||
+    /^bsl/.test(s) ||
+    /^unlicense$/.test(s) ||
+    /^cc0/.test(s)
+  ) return 'permissive';
+  return 'unknown';
+}
+
+function categorizeComponent(comp: CdxComponent): LicenseCategory {
+  const licenses = extractLicenseStrings(comp);
+  if (licenses.length === 0) return 'unknown';
+  // Worst-case wins: proprietary > strong-copyleft > weak-copyleft > permissive > unknown
+  const categoryRank: Record<LicenseCategory, number> = {
+    unknown: 0, permissive: 1, 'weak-copyleft': 2, 'strong-copyleft': 3, proprietary: 4,
+  };
+  let best: LicenseCategory = 'unknown';
+  for (const lic of licenses) {
+    const cat = categorizeLicense(lic);
+    if (categoryRank[cat] > categoryRank[best]) best = cat;
+  }
+  return best;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Ecosystem-Erkennung aus dem PURL — npm:..., pkg:maven:..., usw.
 function ecosystemOf(c: CdxComponent): string {
@@ -209,11 +286,71 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
     </span>`;
   }).join(' ');
 
+  // ── Lizenzen ────────────────────────────────────────────────────────────────
+  const licenseByCategory: Record<LicenseCategory, CdxComponent[]> = {
+    permissive: [], 'weak-copyleft': [], 'strong-copyleft': [], proprietary: [], unknown: [],
+  };
+  for (const c of comps) {
+    licenseByCategory[categorizeComponent(c)].push(c);
+  }
+
+  const licenseChips = LICENSE_CATEGORY_ORDER.map((cat) => {
+    const count = licenseByCategory[cat].length;
+    if (count === 0) return '';
+    const m = LICENSE_CATEGORY_META[cat];
+    return `<span class="chip" style="background:${m.bg};color:${m.fg};border-color:${m.border}">${escapeHtml(m.label)}: <strong>${count}</strong></span>`;
+  }).filter(Boolean).join(' ');
+
+  const strongCopyleftCount = licenseByCategory['strong-copyleft'].length;
+  const proprietaryCount = licenseByCategory['proprietary'].length;
+  const complianceWarning = (strongCopyleftCount > 0 || proprietaryCount > 0)
+    ? `<div class="compliance-warn">⚠ ${[
+        strongCopyleftCount > 0 ? `${strongCopyleftCount} Komponenten unter starker Copyleft-Lizenz` : '',
+        proprietaryCount > 0 ? `${proprietaryCount} proprietäre Komponenten` : '',
+      ].filter(Boolean).join(' und ')} — Prüfung empfohlen</div>`
+    : '';
+
+  const licenseGroupsHtml = LICENSE_CATEGORY_ORDER.map((cat) => {
+    const list = licenseByCategory[cat];
+    if (list.length === 0) return '';
+    const m = LICENSE_CATEGORY_META[cat];
+    const openDefault = cat === 'strong-copyleft' || cat === 'proprietary' ? ' open' : '';
+    const rows = list.map((c) => {
+      const lics = extractLicenseStrings(c);
+      return `
+        <tr>
+          <td><strong>${escapeHtml(c.name ?? '?')}</strong></td>
+          <td class="mono">${escapeHtml(c.version ?? '?')}</td>
+          <td>${lics.length > 0 ? lics.map(escapeHtml).join(', ') : '<span class="muted">—</span>'}</td>
+        </tr>`;
+    }).join('');
+    return `
+      <details class="group lic-group"${openDefault}
+               style="--lic-fg:${m.fg};--lic-bg:${m.bg};--lic-border:${m.border}">
+        <summary>
+          <span class="caret" aria-hidden="true">▸</span>
+          <span class="lic-badge">${escapeHtml(m.label)}</span>
+          <span class="group-count">${list.length}</span>
+        </summary>
+        <div class="group-body">
+          <div class="filter-bar">
+            <input type="search" class="tbl-filter" placeholder="Filtern …" onclick="event.stopPropagation()" data-total="${list.length}" />
+            <span class="filter-count"></span>
+          </div>
+          <table>
+            <thead><tr><th>Komponente</th><th>Version</th><th>Lizenz(en)</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </details>`;
+  }).filter(Boolean).join('\n');
+
   // Komponenten-Sektion
   const componentsHtml = ecoOrder.map((eco, idx) => {
     const list = byEco[eco]!;
     const openDefault = idx === 0 ? ' open' : '';
-    const rows = list.slice(0, 500).map((c) => {
+    const visibleList = list.slice(0, 500);
+    const rows = visibleList.map((c) => {
       const purl = c.purl ?? '';
       return `
         <tr>
@@ -233,6 +370,10 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
           <span class="group-count">${list.length}</span>
         </summary>
         <div class="group-body">
+          <div class="filter-bar">
+            <input type="search" class="tbl-filter" placeholder="Filtern …" onclick="event.stopPropagation()" data-total="${visibleList.length}" />
+            <span class="filter-count"></span>
+          </div>
           <table>
             <thead><tr><th>Komponente</th><th>Version</th><th>PURL</th></tr></thead>
             <tbody>${rows}${overflowHint}</tbody>
@@ -245,6 +386,7 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
   const vulnsHtml = SEVERITY_ORDER.filter((s) => vulnBySev[s].length > 0).map((sev) => {
     const c = SEVERITY_COLORS[sev];
     const openDefault = sev === 'Critical' || sev === 'High' ? ' open' : '';
+    const sevCount = vulnBySev[sev].length;
     const rows = vulnBySev[sev].map((m) => {
       const v = m.vulnerability ?? {};
       const a = m.artifact ?? {};
@@ -279,9 +421,13 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
         <summary>
           <span class="caret" aria-hidden="true">▸</span>
           <span class="sev-badge">${sev}</span>
-          <span class="group-count">${vulnBySev[sev].length} Befunde</span>
+          <span class="group-count">${sevCount} Befunde</span>
         </summary>
         <div class="group-body">
+          <div class="filter-bar">
+            <input type="search" class="tbl-filter" placeholder="Filtern …" onclick="event.stopPropagation()" data-total="${sevCount}" />
+            <span class="filter-count"></span>
+          </div>
           <table>
             <thead>
               <tr><th>CVE</th><th>Paket</th><th>CVSS</th><th>Fix</th><th>Beschreibung</th></tr>
@@ -376,6 +522,20 @@ color:var(--muted);font-size:.82rem;line-height:1.7}
 .ok-banner{margin:1rem 0;padding:.8rem 1rem;border-radius:10px;
 background:#ecfccb;color:#365314;border:1px solid #65a30d;font-weight:600}
 @media (prefers-color-scheme:dark){.ok-banner{background:#172d10;color:#a3e635;border-color:#4d7c0f}}
+details.lic-group{border-color:var(--lic-border);background:var(--lic-bg);color:var(--lic-fg)}
+details.lic-group > summary{background:rgba(0,0,0,.04);border-bottom-color:var(--lic-border)}
+.lic-badge{font-weight:700;text-transform:uppercase;letter-spacing:.08em;
+font-size:.78rem;padding:.2rem .65rem;border-radius:999px;
+background:var(--lic-border);color:#fff}
+.compliance-warn{margin:.7rem 0;padding:.6rem 1rem;border-radius:8px;
+background:#fff7ed;color:#9a3412;border:1px solid #ea580c;font-size:.88rem;font-weight:600}
+@media (prefers-color-scheme:dark){.compliance-warn{background:#2c1308;color:#fb923c;border-color:#c2410c}}
+.filter-bar{display:flex;align-items:center;gap:.6rem;padding:.45rem .8rem;
+background:var(--card);border-bottom:1px solid var(--border)}
+.tbl-filter{flex:1;min-width:0;padding:.3rem .55rem;border:1px solid var(--border);
+border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
+.tbl-filter:focus{outline:2px solid var(--accent);outline-offset:1px}
+.filter-count{white-space:nowrap;font-size:.78rem;color:var(--muted)}
 </style>
 </head>
 <body>

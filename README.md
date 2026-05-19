@@ -3,281 +3,245 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Upstream: TomTonic/extract-sbom](https://img.shields.io/badge/upstream-TomTonic%2Fextract--sbom-informational)](https://github.com/TomTonic/extract-sbom)
 
-A small, self-hosted Node.js + TypeScript web frontend that wraps the
+Selbstgehostete Node.js + TypeScript Web-App, die das Go-basierte
+Supply-Chain-Inspektions-Tool
 [**TomTonic/extract-sbom**](https://github.com/TomTonic/extract-sbom)
-supply-chain inspection tool. Drop a software artifact (up to 5 GB) in
-your browser; the app uploads it resumably, runs the upstream Go
-extractor in a sandbox, and gives you back a CycloneDX SBOM plus audit
-report — all without any data ever leaving your own machine and all
-deleted again the moment you reload the page.
+um eine moderne Browser-Oberfläche, einen Schwachstellen-Scan
+([grype](https://github.com/anchore/grype)) und mehrere
+Aufbereitungs-Berichte ergänzt.
 
-> The actual SBOM extraction, archive recursion, syft cataloguing and
-> audit-report format are entirely the work of the upstream project.
-> This repository only adds the web shell, the sandbox wiring, the
-> resumable-upload plumbing and the ephemeral session lifecycle. See
-> [NOTICE](NOTICE) for attribution and [LICENSE](LICENSE) for the legal
-> details.
+Du wirfst ein Artefakt (bis 5 GB) per Drag & Drop ins Browser-Fenster.
+Die App lädt es **resumable** hoch, lässt extract-sbom drüber laufen,
+scannt die erzeugte CycloneDX-SBOM mit grype gegen die NVD-/GHSA-DB
+und liefert dir am Ende **fünf** Output-Dateien zurück — als Original-
+Download, im Browser ansehbar oder als standalone-HTML zum Speichern
+und Weiterverschicken.
+
+> Die eigentliche SBOM-Extraktion, Archive-Rekursion, das Syft-Cataloging
+> und das Audit-Report-Format kommen vollständig vom Upstream-Projekt.
+> Dieses Repository fügt nur die Web-Hülle, die resumable-Upload-
+> Maschinerie, die CVE-Aufbereitung, die ephemere Session-Logik und die
+> verschiedenen HTML-Aufbereitungen hinzu. Siehe [NOTICE](NOTICE) für
+> die Attribution und [LICENSE](LICENSE) für die Lizenz-Details.
 
 ## Highlights
 
-- **Resumable uploads** via [tus](https://tus.io) — interruptions over
-  Wi-Fi don't kill a 5 GB upload, they just resume.
-- **Per-session job queue** with history: run multiple artifacts in
-  sequence and keep their downloads around for the lifetime of the tab.
-- **Sandboxed analysis**: `bwrap` / `firejail` auto-detection. Read-only
-  root, only the per-session scratch dir is writable, no network for the
-  child process.
-- **Live process telemetry over Server-Sent Events**: PID, command,
-  elapsed time, phase + progress bar (derived from log step detection),
-  cancel button.
-- **Ephemeral by design**: every session has its own 0700 scratch
-  directory; uploads are deleted once extract-sbom exits, passwords are
-  passed via env var (or shredded 0600 file fallback), the entire scratch
-  root is wiped on reload, on tab close, on idle GC and on `SIGTERM`.
-- **Hardened HTTP**: strict CSP, no inline JS/CSS, `SameSite=Strict`
-  cookie, `Sec-Fetch-Site` CSRF guard, optional Basic Auth, per-IP
-  rate limit, structured pino logs with secret redaction.
-- **Graceful drain** on `SIGTERM`: in-flight jobs are given
-  `SHUTDOWN_GRACE_MS` to finish before the process exits.
+- **Resumable Uploads** via [tus](https://tus.io) — ein abgebrochener
+  5-GB-Upload setzt automatisch fort statt neu anzufangen
+- **Pre-Extraktion** für reine `.exe`-Installer (Inno Setup, NSIS): wir
+  knacken das Wrapping mit `7z` bzw. `innoextract` auf und reichen
+  extract-sbom ein ZIP weiter, das es kennt
+- **CVE-Scan** über die CycloneDX-SBOM mit [grype](https://github.com/anchore/grype);
+  Ergebnis als JSON, CSV (Excel-tauglich, UTF-8 BOM) und farbig-
+  kategorisiertem HTML (Critical/High/Medium/Low/Negligible)
+- **Gesamtübersicht-HTML** kombiniert Komponenten (gruppiert nach
+  Ecosystem), Lizenz-Compliance (permissive/weak-copyleft/strong-
+  copyleft/proprietary), Schwachstellen und Restrisiken in einer
+  standalone-Seite — alle Sektionen aufklappbar, Live-Filter über jede
+  Tabelle
+- **VEX-Skelett** ([CycloneDX VEX 1.6](https://github.com/CycloneDX/bom-examples/tree/master/VEX))
+  zum Befüllen für Lieferketten-Integrationen
+- **SPDX-Export** via `syft convert` zusätzlich zu CycloneDX für Tools
+  wie FOSSology oder ORT
+- **Live-Telemetrie** über Server-Sent Events: PID, Kommando, Phase mit
+  Progress-Bar, Log Zeile-für-Zeile, Stop-Button
+- **Per-Session-Job-Queue mit Historie**: mehrere Artefakte
+  hintereinander, Downloads bleiben bis Sitzungsende erreichbar
+- **Ephemere by design**: Per-Session-Scratch-Dir, Passwörter via Env-Var
+  (Fallback 0600-Datei mit Shred), Auto-Cleanup bei Idle-GC, Reload,
+  SIGTERM oder explizitem „Neue Sitzung"
+- **Persistenter grype-DB-Cache** via Volume: 80 MB Vuln-DB
+  überlebt Container-Restarts
+- **Polizeiblau-Design** mit Dark-Mode-Unterstützung, vollständig auf
+  Deutsch lokalisiert
 
-## Who this is for
+## Outputs pro Job
 
-Anyone who wants to give non-CLI users a one-click "drop your artifact,
-get an SBOM" experience without writing their own glue. The repo is
-permissively MIT-licensed and self-contained — fork it, deploy it on an
-internal VM behind your SSO proxy, mount the scratch dir on tmpfs, and
-you're done. Contributions back are welcome.
+| Datei | Format | Inhalt |
+| --- | --- | --- |
+| `<name>.cdx.json` | CycloneDX JSON | Rohe SBOM von extract-sbom |
+| `<name>.report.md` | Markdown | Audit-Report (Extraktor-Log, Restrisiken) |
+| `<name>.spdx.json` | SPDX JSON | dieselbe SBOM im SPDX-Format |
+| `<name>.vulnerabilities.json` | grype JSON | CVE-Treffer in Rohform |
+| `<name>.vulnerabilities.csv` | CSV | CVE-Liste für Excel/Auditoren |
+| `<name>.vulnerabilities.html` | Standalone HTML | farbig kategorisiert, aufklappbar nach Severity |
+| `<name>.vex.json` | CycloneDX VEX | Skelett zum Befüllen pro CVE |
+| `<name>.summary.html` | Standalone HTML | **Gesamtübersicht**: Komponenten + Lizenzen + CVEs + Restrisiken |
 
-## Requirements
+In der UI-Job-Karte gibt es pro Datei drei Aktionen:
 
-- **Node.js ≥ 20**
-- **Go ≥ 1.21** to build the upstream extract-sbom binary from source
-- **git** with submodule support (for the upstream source)
-- **Recommended on Linux:** `bwrap` (Debian/Ubuntu: `apt install bubblewrap`).
-  The app auto-detects it and falls back to running unsandboxed if it's
-  missing — set `SANDBOX_MODE=none` to be explicit, or
-  `EXTRACT_SBOM_ARGS=--unsafe` to disable extract-sbom's own sandbox too.
-- **Optional**: `syft` (component cataloging) and `grype` (vulnerability
-  enrichment) are runtime deps of extract-sbom itself; the app surfaces
-  them as advisory checks via `scripts/preflight.sh`.
+- **Ansicht** — Inline-Modal im selben Tab mit gerendertem HTML
+- **Als HTML** — Standalone-HTML-Datei runterladen
+- **Original** — Roh-Datei (JSON / Markdown / CSV)
 
 ## Quickstart
 
-### From source
+### Aus dem veröffentlichten Docker-Image
+
+Ein Multi-Stage-Image wird auf jeden Commit nach `main` und jeden
+`v*.*.*`-Tag gebaut und nach Docker Hub (`merlin2539/sbom`) und GHCR
+(`ghcr.io/merlin2533/sbom`) gepusht.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/merlin2533/sbom/main/docker-compose.yml \
+    -o docker-compose.yml
+docker compose up -d
+# → http://localhost:3000
+```
+
+Update-Workflow:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Das Image bringt alles mit: `extract-sbom`, `syft`, `grype`,
+`innoextract`, `p7zip-full`, `unshield`, `tini`. Du brauchst nur einen
+Docker-Host.
+
+Die compose-Datei legt automatisch ein **persistentes Volume**
+`grype-cache` für die Vuln-DB an, damit sie Container-Restarts
+überlebt.
+
+### Lokal vom Source
+
+Voraussetzungen: Node.js ≥ 20, Go ≥ 1.21, git mit Submodule-Support.
 
 ```bash
 git clone https://github.com/merlin2533/sbom.git
 cd sbom
-./scripts/install.sh         # init submodule, npm ci, build the Go binary, npm run build
-npm start                    # listen on http://localhost:3000
+./scripts/install.sh         # Submodule init, npm ci, Go-Build, TS-Build
+npm start                    # http://localhost:3000
 ```
 
-`install.sh` is idempotent — re-run it any time you pull updates.
+`install.sh` ist idempotent. Vor dem Start optional `./scripts/preflight.sh`
+für eine Bereitschafts-Prüfung (extract-sbom, grype, syft, scratch-Dir
+beschreibbar, Frontend-Build da).
 
-### From the published Docker image
+## Konfiguration
 
-A multi-stage image is built and pushed to Docker Hub and GHCR on every
-commit to `main` and on every `v*.*.*` tag (see
-[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)).
-
-```bash
-# Pull and run a one-shot container:
-docker run --rm -p 3000:3000 \
-  --tmpfs /scratch:rw,nosuid,nodev,size=8g,mode=0700,uid=10001,gid=10001 \
-  --cap-drop=ALL --security-opt=no-new-privileges:true \
-  -e SCRATCH_DIR=/scratch -e SANDBOX_MODE=none \
-  merlin2539/sbom:latest
-
-# Or, ready-made compose file:
-curl -fsSL https://raw.githubusercontent.com/merlin2533/sbom/main/docker-compose.yml \
-    -o docker-compose.yml
-docker compose up -d
-# open http://localhost:3000
-```
-
-The image ships with `bubblewrap`, `syft` and the upstream Go
-`extract-sbom` binary already built in; you only need a Docker host.
-
-> Maintainers: pushing requires the repo secrets `DOCKERHUB_USERNAME` and
-> `DOCKERHUB_TOKEN` to be set. GHCR uses the workflow's built-in
-> `GITHUB_TOKEN` automatically.
-
-## Preflight check
-
-Before exposing the app, verify everything is in place:
-
-```bash
-./scripts/preflight.sh        # or: npm run preflight
-```
-
-Exits 0 only when the required pieces (Node, `extract-sbom` resolvable,
-built assets, writable scratch dir) are all green. Optional tools
-(`bwrap`, `firejail`, `syft`, `grype`) print advisory warnings but
-never fail the check.
-
-## Configuration
-
-All knobs are environment variables.
-
-| Variable | Default | Purpose |
+| Env-Var | Default | Bedeutung |
 | --- | --- | --- |
-| `PORT` | `3000` | HTTP port |
-| `HOST` | `0.0.0.0` | Bind address |
-| `EXTRACT_SBOM_BIN` | `extract-sbom` | Path to the binary (defaults to PATH lookup; `./bin/extract-sbom` after `install.sh`) |
-| `EXTRACT_SBOM_ARGS` | _(empty)_ | Extra args appended to every invocation, e.g. `--unsafe --grype` |
-| `SANDBOX_MODE` | `auto` | `auto` \| `bwrap` \| `firejail` \| `none` |
-| `MAX_UPLOAD_BYTES` | `5368709120` | Upload size cap (default 5 GiB) |
-| `SCRATCH_DIR` | `$TMPDIR/sbom-upload-app` | Per-session work area. Point at `/dev/shm/...` to keep everything in RAM |
-| `SESSION_IDLE_MS` | `1800000` | Idle session GC (default 30 min) |
-| `SHUTDOWN_GRACE_MS` | `30000` | Time to wait for in-flight jobs on SIGTERM |
-| `UPLOAD_RATE_PER_MIN` | `5` | Per-IP rate limit on new upload creations |
-| `AUTH_USER` / `AUTH_PASS` | _(empty)_ | When both set: HTTP Basic Auth on every route |
-| `TRUST_PROXY` | `0` | Set to `1` behind a TLS-terminating reverse proxy. Makes the cookie `Secure`, honours `X-Forwarded-*` |
-| `LOG_LEVEL` | `info` | pino log level |
-| `LOG_PRETTY` | _(auto-detected)_ | Force pretty stdout logs on/off |
+| `PORT` | `3000` | HTTP-Port |
+| `HOST` | `0.0.0.0` | Bind-Adresse |
+| `SCRATCH_DIR` | `$TMPDIR/sbom-upload-app` | Per-Session-Arbeitsverzeichnis. Setze `/dev/shm/...` um alles im RAM zu halten |
+| `EXTRACT_SBOM_BIN` | `extract-sbom` | Pfad zum Binary (im Image bereits auf `/usr/local/bin/extract-sbom`) |
+| `EXTRACT_SBOM_ARGS` | `--unsafe` | Argumente die jedem Aufruf vorgesetzt werden. `--unsafe` deaktiviert den inneren bwrap-Sandbox |
+| `SANDBOX_MODE` | `none` | `auto` / `bwrap` / `firejail` / `none` für den äußeren Sandbox-Wrapper |
+| `GRYPE_DB_CACHE_DIR` | `/var/cache/grype` | Wohin grype die Vuln-DB ablegt; das compose-Volume mountet hier ein named volume |
+| `MAX_UPLOAD_BYTES` | `5368709120` | Upload-Cap (Default 5 GiB) |
+| `SESSION_IDLE_MS` | `1800000` | Idle-GC (30 min) |
+| `SHUTDOWN_GRACE_MS` | `30000` | Zeit für In-Flight-Jobs bei SIGTERM |
+| `UPLOAD_RATE_PER_MIN` | `5` | Per-IP-Rate-Limit auf neue Upload-Erzeugung |
+| `AUTH_USER` / `AUTH_PASS` | _(leer)_ | HTTP Basic Auth über alle Routen wenn beide gesetzt |
+| `TRUST_PROXY` | `0` | Auf `1` setzen wenn hinter TLS-Proxy (Caddy/nginx/Traefik). Macht Cookie `Secure` und respektiert `X-Forwarded-*` |
+| `LOG_LEVEL` | `info` | pino-Level |
+| `LOG_PRETTY` | _(auto)_ | Forciert pretty-stdout |
 
-## Privacy & security
+## Versionsanzeige
 
-The app is **ephemeral by default** and tries hard to keep uploads and
-secrets out of long-lived storage.
+Topbar zeigt `vMAJOR.MINOR.<commit_count>+<short_sha>`. Beim
+`docker compose pull` siehst du sofort, ob du eine neue Version hast.
+Auch unter `/api/health` als JSON-Feld `version`.
 
-### Where the data lives
+## Sicherheit & Privatsphäre
 
-- The whole scratch root is created with mode `0700` and **wiped on
-  startup** (so a crashed previous process can't leak leftovers) and on
-  graceful shutdown.
-- Set `SCRATCH_DIR=/dev/shm/sbom-upload-app` to keep every byte in RAM
-  — uploads, intermediate extraction, the SBOM and the report.
-- Each session gets its own subdirectory `<scratch>/<sid>/`, also `0700`.
-  The session id is 128 bits of CSPRNG, carried in an `HttpOnly`,
-  `SameSite=Strict` cookie (plus `Secure` when behind an HTTPS proxy and
-  `TRUST_PROXY=1`).
+Die App ist **permissive by default**, damit sie auch hinter Tunneln,
+auf HTTP-IP-Adressen und mit restriktiven Browser-Konfigurationen
+funktioniert. Für Single-User-Setups ist das angemessen; wer das App
+öffentlich exponieren will, sollte:
 
-### Passwords
+- TLS-Proxy davor (`TRUST_PROXY=1` setzen)
+- `AUTH_USER`/`AUTH_PASS` setzen
+- `MAX_UPLOAD_BYTES` und `UPLOAD_RATE_PER_MIN` an die eigene
+  Risiko-Toleranz anpassen
+- SCRATCH_DIR auf eine tmpfs zeigen lassen (`/dev/shm/sbom`), damit
+  Uploads und Extraktion komplett im RAM passieren
 
-- By default passwords are passed to extract-sbom via the
-  `EXTRACT_SBOM_PASSWORDS` env var of the child process — **they never
-  touch disk**. The env var disappears with the child.
-- Fallback: if any password contains a comma (which the env-var
-  encoding can't represent unambiguously) the app writes a 0600
-  `passwords.txt` in the session dir, passes it via `--password-file`,
-  and **shreds it** (overwrite with random bytes, `fsync`, `unlink`)
-  the moment the child exits. The UI shows which transport was used.
-- Same threat model in both cases: a same-user process on the host can
-  read either `/proc/<pid>/environ` or the 0600 file. Don't expose the
-  app on a multi-tenant host without a sandbox.
+### Datenfluss
 
-### After the run
+- Pro Session ein eigener Scratch-Ordner unter `SCRATCH_DIR/<sid>/`,
+  mode `0700`. Beim Server-Start wird der Scratch-Root gewipped.
+- Passwörter wandern bevorzugt in die `EXTRACT_SBOM_PASSWORDS`-Env-Var
+  des Kind-Prozesses (kommen nie auf Disk). Fallback: 0600-Datei, die
+  per `crypto.randomBytes` überschrieben und dann unlinked wird.
+- Das hochgeladene Artefakt wird gelöscht, sobald extract-sbom beendet
+  ist. Die erzeugten Berichte bleiben bis zur Session-Zerstörung.
+- Auto-Cleanup über Idle-GC (30 min), Browser-Reload, „Neue
+  Sitzung"-Button, oder SIGTERM-Drain.
 
-- The uploaded artifact is deleted as soon as extract-sbom exits.
-- The generated SBOM/report stay only until the session is destroyed
-  (reload, **New session**, tab close, idle GC, or shutdown).
+### CSRF / Sessions
 
-### Sandboxing
-
-When `SANDBOX_MODE` resolves to `bwrap` or `firejail`, every
-`extract-sbom` invocation runs with:
-
-- read-only root filesystem view,
-- only the per-session scratch dir bound read-write,
-- no network namespace,
-- private `/tmp` and `/dev`,
-- `--die-with-parent` so a crash of the Node parent cleans up children.
-
-Set `SANDBOX_MODE=none` to disable.
-
-### Transport & HTTP headers
-
-- Cookie: `HttpOnly; SameSite=Strict; Secure` (the last one when behind
-  an HTTPS proxy with `TRUST_PROXY=1`).
-- Content Security Policy: `default-src 'self'`, no inline scripts or
-  styles, `frame-ancestors 'none'`, `base-uri 'none'`, `object-src
-  'none'`.
-- Plus `X-Content-Type-Options`, `X-Frame-Options: DENY`,
-  `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy`,
-  `Cross-Origin-Resource-Policy`, `Permissions-Policy`.
-- `Cache-Control: no-store, private` on the SPA shell, every API
-  response and served JS/CSS — nothing lands in shared caches.
-- CSRF: state-changing API calls reject requests whose `Sec-Fetch-Site`
-  is neither `same-origin` nor `none`. Combined with `SameSite=Strict`
-  this blocks cross-site form-POSTs even from older browsers.
-- HTTP Basic Auth (optional, `AUTH_USER`/`AUTH_PASS`) gates every route;
-  credentials are compared in constant time.
-- Per-IP upload rate limit (default 5/min) returns 429 with
-  `Retry-After`.
-
-### Logging
-
-Structured JSON logs via [pino](https://getpino.io), with redaction for
-`req.headers.authorization`, `req.headers.cookie`, `set-cookie`, and any
-field matching `password*`. `LOG_PRETTY=1` switches to a human-readable
-console formatter.
-
-### Deployment recipe (production)
-
-```bash
-SCRATCH_DIR=/dev/shm/sbom \
-SANDBOX_MODE=bwrap \
-AUTH_USER=ops AUTH_PASS='change-me' \
-TRUST_PROXY=1 \
-PORT=3000 HOST=127.0.0.1 \
-LOG_LEVEL=info \
-npm start
-```
-
-Put it behind nginx / Caddy / Traefik with TLS termination, forwarding
-`X-Forwarded-Proto` so the session cookie ends up `Secure`. Set the
-proxy's upload size limit to at least `MAX_UPLOAD_BYTES`. The tus
-protocol uses `OPTIONS`, `POST`, `HEAD`, `PATCH` and `DELETE` — make
-sure your proxy passes those through.
+Nach mehreren echten Bug-Reports auf HTTP-IP-Deployments läuft die
+Session-Auflösung jetzt über **drei** Transporte (Cookie / `X-Session-Id`
+Header / `?sid=` Query) und die App akzeptiert die erste sid, die zu
+einer lebenden Session passt. Bei kompletter Miss-Resolution wird
+**automatisch eine frische Session erzeugt** (Auto-Create-Fallback),
+damit der Workflow trotz Tab-Discarding, stale Cookies und ähnlichem
+nicht stehenbleibt.
 
 ## API
 
-The browser app talks to a small JSON API. Endpoints are session-scoped
-via the `sid` cookie.
-
-| Method | Path | Purpose |
+| Methode | Pfad | Zweck |
 | --- | --- | --- |
-| `GET` | `/` | Issues a fresh session cookie, wipes the previous session's scratch dir, serves the SPA |
-| `*` | `/api/tus/*` | Resumable upload protocol ([tus 1.0](https://tus.io/protocols/resumable-upload)) |
-| `POST` | `/api/jobs` | Body `{ passwords?: string }`. Starts extract-sbom on the just-finished upload |
-| `GET` | `/api/state` | One-shot session snapshot (current job + history) |
-| `GET` | `/api/events` | Server-Sent Events stream: `state`, `log`, `log-replay`, `outputs`, `phase`, `closed` |
-| `POST` | `/api/cancel` | SIGTERM the running job (then SIGKILL after 5 s) |
-| `GET` | `/api/download/:jobId/:name` | Stream an output file from a specific job |
-| `POST` | `/api/reset` | Destroy this session immediately |
-| `GET` | `/api/health` | Liveness, session count, detected sandbox |
+| `GET` | `/` | Setzt/erneuert Session-Cookie, liefert SPA |
+| `*` | `/api/tus/*` | tus 1.0 — resumable upload protocol |
+| `POST` | `/api/jobs` | Body `{ passwords?: string }` — startet extract-sbom auf zuletzt hochgeladenem Artefakt |
+| `GET` | `/api/state` | One-shot Snapshot der Session |
+| `GET` | `/api/events` | Server-Sent Events: `state`, `log`, `outputs`, `phase`, `closed` |
+| `POST` | `/api/cancel` | SIGTERM auf laufenden Job (eskaliert zu SIGKILL nach 5 s) |
+| `GET` | `/api/download/:jobId/:name` | Output-Datei downloaden |
+| `GET` | `/api/view/:jobId/:name` | Output als HTML rendern; `?download=1` setzt `Content-Disposition: attachment` |
+| `POST` | `/api/reset` | Session sofort zerstören |
+| `GET` | `/api/health` | Liveness, Session-Count, App-Version, erkannter Sandbox |
 
-## Repository layout
+## Repository-Layout
 
 ```
-src/                    Node/TypeScript server (compiled to dist/)
-public/src/             Browser TypeScript source
-public/                 index.html, styles.css, vendored tus client
-scripts/install.sh      One-shot bootstrap (submodule + Go build + npm)
-scripts/preflight.sh    Deployment readiness check
-vendor/extract-sbom/    Git submodule → TomTonic/extract-sbom upstream
-tests/                  vitest tests
-bin/                    Built extract-sbom binary lands here
+src/                     Node/TypeScript-Server (kompiliert zu dist/)
+src/pre-extract.ts       7z/innoextract-Vorverarbeitung für .exe-Installer
+src/vuln-report.ts       grype-Aufruf + CSV/HTML-Aufbereitung der CVE-Liste
+src/summary-report.ts    Gesamtübersicht: Komponenten + Lizenzen + CVEs + Restrisiken
+public/src/              Browser-TypeScript-Source
+public/                  index.html, styles.css, vendorter tus-Client
+scripts/install.sh       Setup-Skript (Submodule + Go-Build + npm + Vendor)
+scripts/preflight.sh     Bereitschafts-Prüfung
+vendor/extract-sbom/     Git-Submodule auf TomTonic/extract-sbom
+tests/                   vitest-Suite (71 Tests)
+.github/workflows/       Docker-Build- + Publish-Pipeline
 ```
+
+## Build & Tests
+
+```bash
+npm run build       # TS-Server + Frontend + vendor tus-js-client
+npm test            # vitest
+npm run typecheck   # tsc --noEmit für Server + Frontend
+```
+
+71 Tests decken Security-Middlewares (CSRF, Basic-Auth, Rate-Limit,
+Security-Headers), Session-Lebenszyklus, Passwort-Transport (env vs.
+Datei, Shred-on-exit), Step-Detector, Sandbox-Builder, Graceful-Drain
+und das Job-Lifecycle ab.
 
 ## Contributing
 
-Issues and PRs welcome. Two ground rules:
+Issues und PRs willkommen. Drei Grundregeln:
 
-1. Don't break the privacy guarantees (ephemeral session, no disk
-   passwords by default, no logs of secrets). Tests in `tests/` cover
-   the security middlewares — keep them green.
-2. Don't fork extract-sbom's logic into this repo. Bug reports and
-   feature requests for the extractor itself belong
+1. Die Datenschutz-Garantien dürfen nicht erodieren: ephemere
+   Session, keine Passwörter auf Disk per Default, keine Secrets in
+   Logs. Tests in `tests/security.test.ts` halten das nach.
+2. Die `extract-sbom`-Logik nicht in dieses Repo abkupfern. Bugs am
+   Extraktor selbst gehören
    [upstream](https://github.com/TomTonic/extract-sbom/issues).
+3. Vor jedem PR: `npm run typecheck && npm test`. Die
+   `docker-publish`-CI baut das Image nur erfolgreich, wenn beides
+   grün ist.
 
-Run `npm run typecheck && npm test` before opening a PR.
+## Lizenz
 
-## License
+MIT — siehe [LICENSE](LICENSE).
 
-MIT — see [LICENSE](LICENSE).
-
-The submodule under `vendor/extract-sbom/` is BSD 3-Clause and remains
-the property of its upstream author; see [NOTICE](NOTICE) and
+Das Submodule unter `vendor/extract-sbom/` ist BSD-3-Clause und bleibt
+Eigentum des Upstream-Autors; siehe [NOTICE](NOTICE) und
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

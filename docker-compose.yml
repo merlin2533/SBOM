@@ -74,6 +74,12 @@ services:
     tmpfs:
       - /scratch:rw,nosuid,nodev,size=8g,mode=0700,uid=10001,gid=10001
 
+    volumes:
+      # Persistente grype-Vulnerability-DB (~80 MB), damit Cold Starts
+      # nicht jedesmal die DB neu ziehen müssen. Komplett wegwerfbar —
+      # grype lädt im Zweifel sowieso nach.
+      - grype-cache:/var/cache/grype
+
     # Drop every capability by default. Re-add SYS_ADMIN only if you turn on
     # SANDBOX_MODE=bwrap (bubblewrap needs it for user/mount namespaces).
     cap_drop:
@@ -100,3 +106,6 @@ services:
 
 # To put TLS in front, drop the published port above and add a reverse proxy
 # such as Caddy or Traefik in this same compose file pointing at sbom:3000.
+
+volumes:
+  grype-cache: {}

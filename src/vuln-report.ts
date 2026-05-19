@@ -33,6 +33,7 @@ export interface VulnReportResult {
   ranGrype: boolean;
   jsonPath: string | null;
   htmlPath: string | null;
+  csvPath: string | null;
   counts: Record<Severity, number>;
   total: number;
 }
@@ -74,6 +75,62 @@ interface GrypeOutput {
   source?: { type?: string; target?: unknown };
   distro?: unknown;
   descriptor?: { name?: string; version?: string; db?: { built?: string; status?: string } };
+}
+
+/** RFC-4180 CSV field escaping. */
+function csvField(s: string): string {
+  if (/[,"\r\n]/.test(s)) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+/** Build RFC-4180 CSV (with UTF-8 BOM for Excel) from grype matches. */
+function buildCsv(matches: GrypeMatch[]): string {
+  const BOM = '﻿';
+  const header = [
+    'CVE', 'Severity', 'CVSS', 'Package', 'Version', 'Type', 'PURL',
+    'Fix Versions', 'Fix State', 'Source URL', 'Description',
+  ].map(csvField).join(',');
+
+  // Sort: Severity order, then CVSS desc within same severity
+  const severityRank: Record<string, number> = {
+    Critical: 0, High: 1, Medium: 2, Low: 3, Negligible: 4, Unknown: 5,
+  };
+  const sorted = [...matches].sort((a, b) => {
+    const ra = severityRank[normalizeSeverity(a.vulnerability?.severity)] ?? 5;
+    const rb = severityRank[normalizeSeverity(b.vulnerability?.severity)] ?? 5;
+    if (ra !== rb) return ra - rb;
+    const sa = a.vulnerability?.cvss?.[0]?.metrics?.baseScore ?? 0;
+    const sb = b.vulnerability?.cvss?.[0]?.metrics?.baseScore ?? 0;
+    return sb - sa;
+  });
+
+  const rows = sorted.map((m) => {
+    const v = m.vulnerability ?? {};
+    const a = m.artifact ?? {};
+    const sev = normalizeSeverity(v.severity);
+    const cvss = v.cvss?.[0]?.metrics?.baseScore;
+    const fixVersions = v.fix?.versions?.join('; ') ?? '';
+    const fixState = v.fix?.state ?? '';
+    const sourceUrl = (v.urls ?? [])[0] ?? (v.dataSource ?? '');
+    const desc = (v.description ?? '').replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+    return [
+      v.id ?? '',
+      sev,
+      cvss != null ? cvss.toFixed(1) : '',
+      a.name ?? '',
+      a.version ?? '',
+      a.type ?? '',
+      a.purl ?? '',
+      fixVersions,
+      fixState,
+      sourceUrl,
+      desc,
+    ].map(csvField).join(',');
+  });
+
+  return BOM + [header, ...rows].join('\r\n') + '\r\n';
 }
 
 function escapeHtml(s: string): string {
@@ -199,15 +256,20 @@ function buildHtmlReport(opts: {
     // zugeklappt — der wichtigste Befund ist sofort sichtbar, ohne dass der
     // Bericht 50 Bildschirme hoch ist.
     const openDefault = sev === 'Critical' || sev === 'High' ? ' open' : '';
+    const total = groups[sev].length;
     return `
       <details class="sev-group"${openDefault}
                style="--sev-fg:${c.fg};--sev-bg:${c.bg};--sev-border:${c.border}">
         <summary>
           <span class="caret" aria-hidden="true">▸</span>
           <span class="sev-badge">${sev}</span>
-          <span class="sev-count">${groups[sev].length} Befunde</span>
+          <span class="sev-count">${total} Befunde</span>
         </summary>
         <div class="sev-table-wrap">
+        <div class="filter-bar">
+          <input type="search" class="tbl-filter" placeholder="Filtern …" onclick="event.stopPropagation()" data-total="${total}" />
+          <span class="filter-count"></span>
+        </div>
         <table>
           <thead>
             <tr><th>CVE</th><th>Paket</th><th>CVSS</th><th>Fix</th><th>Beschreibung</th></tr>
@@ -289,6 +351,12 @@ td.desc{max-width:560px}
 td.desc a{color:var(--accent)}
 footer.report{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);
 color:var(--muted);font-size:.82rem}
+.filter-bar{display:flex;align-items:center;gap:.6rem;padding:.5rem .8rem;
+background:var(--card);border-bottom:1px solid var(--border)}
+.tbl-filter{flex:1;min-width:0;padding:.35rem .6rem;border:1px solid var(--border);
+border-radius:6px;font-size:.85rem;background:var(--bg);color:var(--fg)}
+.tbl-filter:focus{outline:2px solid var(--accent);outline-offset:1px}
+.filter-count{white-space:nowrap;font-size:.8rem;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -312,6 +380,32 @@ color:var(--muted);font-size:.82rem}
     · generiert ${new Date().toISOString()}
   </footer>
 </main>
+<script>
+(function(){
+  function setupFilter(input){
+    var total=parseInt(input.dataset.total||'0',10);
+    var countEl=input.parentNode.querySelector('.filter-count');
+    var tbody=input.closest('.sev-table-wrap').querySelector('tbody');
+    var timer=null;
+    function applyFilter(){
+      var q=input.value.toLowerCase().trim();
+      var rows=tbody.querySelectorAll('tr');
+      var visible=0;
+      rows.forEach(function(tr){
+        var match=!q||tr.textContent.toLowerCase().indexOf(q)>=0;
+        tr.style.display=match?'':'none';
+        if(match)visible++;
+      });
+      if(countEl)countEl.textContent=q?(visible+' von '+total+' sichtbar'):'';
+    }
+    input.addEventListener('input',function(){
+      clearTimeout(timer);
+      timer=setTimeout(applyFilter,16);
+    });
+  }
+  document.querySelectorAll('.tbl-filter').forEach(setupFilter);
+})();
+</script>
 </body>
 </html>`;
 }
@@ -327,6 +421,7 @@ export async function runVulnReport(opts: VulnReportOpts): Promise<VulnReportRes
     ranGrype: false,
     jsonPath: null,
     htmlPath: null,
+    csvPath: null,
     counts: { Critical: 0, High: 0, Medium: 0, Low: 0, Negligible: 0, Unknown: 0 },
     total: 0,
   };
@@ -339,6 +434,7 @@ export async function runVulnReport(opts: VulnReportOpts): Promise<VulnReportRes
   const base = path.basename(cdxJsonPath).replace(/\.cdx\.json$/i, '').replace(/\.json$/i, '');
   const jsonPath = path.join(outDir, `${base}.vulnerabilities.json`);
   const htmlPath = path.join(outDir, `${base}.vulnerabilities.html`);
+  const csvPath = path.join(outDir, `${base}.vulnerabilities.csv`);
 
   logger.info({ jobId, cdxJsonPath }, 'vuln-report: running grype');
   const r = await runGrype(cdxJsonPath, jsonPath, 600_000);
@@ -346,7 +442,7 @@ export async function runVulnReport(opts: VulnReportOpts): Promise<VulnReportRes
     logger.warn({ jobId, code: r.code, stderr: r.stderr.slice(0, 500) }, 'vuln-report: grype failed');
     // grype hinterlässt evtl. einen Müll-File — wegräumen.
     await fsp.unlink(jsonPath).catch(() => {});
-    return empty;
+    return { ...empty };
   }
 
   let data: GrypeOutput;
@@ -355,7 +451,7 @@ export async function runVulnReport(opts: VulnReportOpts): Promise<VulnReportRes
     data = JSON.parse(txt) as GrypeOutput;
   } catch (e) {
     logger.warn({ jobId, err: e }, 'vuln-report: could not parse grype output');
-    return empty;
+    return { ...empty };
   }
 
   const matches = data.matches ?? [];
@@ -376,10 +472,19 @@ export async function runVulnReport(opts: VulnReportOpts): Promise<VulnReportRes
   });
   await fsp.writeFile(htmlPath, html, 'utf8');
 
+  // CSV export
+  const csv = buildCsv(matches);
+  await fsp.writeFile(csvPath, csv, 'utf8');
+  const csvLineCount = matches.length; // data rows (excl. header)
+  logger.info(
+    { jobId, csvLines: csvLineCount, csv: path.basename(csvPath) },
+    `[csv] vulnerabilities.csv geschrieben (${csvLineCount} Zeilen)`
+  );
+
   logger.info(
     { jobId, total, counts, html: path.basename(htmlPath) },
     'vuln-report: completed'
   );
 
-  return { ranGrype: true, jsonPath, htmlPath, counts, total };
+  return { ranGrype: true, jsonPath, htmlPath, csvPath, counts, total };
 }
