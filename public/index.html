@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SBOM Extractor</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --fg: #1b1f24;
+    --muted: #5a6470;
+    --accent: #2a64f5;
+    --accent-fg: #ffffff;
+    --border: #d8dde3;
+    --error: #c2363b;
+    --ok: #1f8a44;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c;
+      --card: #1d2128;
+      --fg: #e9edf2;
+      --muted: #97a0ad;
+      --border: #2c323b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    padding: 2rem 1rem;
+  }
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  p.lead { color: var(--muted); margin-top: 0; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    margin-top: 1rem;
+  }
+  label { display: block; font-weight: 600; margin-bottom: .35rem; }
+  .hint { color: var(--muted); font-size: .85rem; margin-bottom: .6rem; }
+  input[type=file], textarea {
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: .55rem .65rem;
+  }
+  textarea { min-height: 110px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .row { display: flex; gap: .6rem; align-items: center; margin-top: 1rem; flex-wrap: wrap; }
+  button {
+    font: inherit;
+    border: 0;
+    background: var(--accent);
+    color: var(--accent-fg);
+    padding: .6rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--fg);
+    border: 1px solid var(--border);
+  }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  progress { width: 100%; height: 10px; }
+  .status { margin-top: .75rem; color: var(--muted); }
+  .status.error { color: var(--error); }
+  .status.ok { color: var(--ok); }
+  pre.log {
+    background: #0b0d10;
+    color: #d8e1ea;
+    padding: .75rem;
+    border-radius: 6px;
+    max-height: 320px;
+    overflow: auto;
+    font-size: .8rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  ul.downloads { list-style: none; padding: 0; margin: 0; }
+  ul.downloads li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: .5rem .65rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: .35rem;
+  }
+  ul.downloads a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .filesize { color: var(--muted); font-variant-numeric: tabular-nums; }
+  footer { color: var(--muted); font-size: .8rem; margin-top: 2rem; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>SBOM Extractor</h1>
+  <p class="lead">
+    Upload an artifact (up to 5&nbsp;GB). It is passed through
+    <code>extract-sbom</code>, and the resulting CycloneDX SBOM plus audit
+    report can be downloaded below. Everything is ephemeral — reloading this
+    page wipes the upload and all generated files.
+  </p>
+
+  <form id="form" class="card" enctype="multipart/form-data">
+    <label for="artifact">Artifact</label>
+    <div class="hint">Any file extract-sbom understands (ZIP, TAR, 7z, MSI, CAB, RAR, container images, …).</div>
+    <input id="artifact" name="artifact" type="file" required />
+
+    <div style="height: 1rem"></div>
+
+    <label for="passwords">Archive passwords (optional)</label>
+    <div class="hint">One password per line. Lines beginning with <code>#</code> are treated as comments.</div>
+    <textarea id="passwords" name="passwords" placeholder="# one password per line&#10;hunter2&#10;correct horse battery staple"></textarea>
+
+    <div class="row">
+      <button id="submit" type="submit">Analyze</button>
+      <button id="reset" type="button" class="secondary">Reset session</button>
+      <span id="status" class="status">Idle.</span>
+    </div>
+
+    <div id="progressWrap" style="display:none; margin-top: 1rem">
+      <progress id="progress" max="100" value="0"></progress>
+      <div id="progressText" class="status"></div>
+    </div>
+  </form>
+
+  <section id="resultCard" class="card" style="display:none">
+    <h2 style="margin-top:0; font-size:1.1rem">Results</h2>
+    <ul id="downloads" class="downloads"></ul>
+    <details>
+      <summary>extract-sbom log</summary>
+      <pre id="log" class="log"></pre>
+    </details>
+  </section>
+
+  <footer>
+    Files live only on the server while this tab is open. Reloading the page or
+    pressing “Reset session” deletes them immediately.
+  </footer>
+</main>
+
+<script>
+const form = document.getElementById('form');
+const submitBtn = document.getElementById('submit');
+const resetBtn = document.getElementById('reset');
+const statusEl = document.getElementById('status');
+const progressWrap = document.getElementById('progressWrap');
+const progress = document.getElementById('progress');
+const progressText = document.getElementById('progressText');
+const resultCard = document.getElementById('resultCard');
+const downloadsEl = document.getElementById('downloads');
+const logEl = document.getElementById('log');
+
+let polling = null;
+
+function setStatus(msg, kind) {
+  statusEl.textContent = msg;
+  statusEl.className = 'status' + (kind ? ' ' + kind : '');
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  const units = ['KB','MB','GB','TB'];
+  let i = -1; let v = n;
+  do { v /= 1024; i++; } while (v >= 1024 && i < units.length - 1);
+  return v.toFixed(v < 10 ? 2 : 1) + ' ' + units[i];
+}
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const file = document.getElementById('artifact').files[0];
+  if (!file) return;
+
+  submitBtn.disabled = true;
+  resultCard.style.display = 'none';
+  downloadsEl.innerHTML = '';
+  logEl.textContent = '';
+  progressWrap.style.display = 'block';
+  progress.value = 0;
+  progressText.textContent = 'Uploading 0%…';
+  setStatus('Uploading…');
+
+  const fd = new FormData(form);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/upload');
+  xhr.upload.onprogress = (ev) => {
+    if (ev.lengthComputable) {
+      const pct = (ev.loaded / ev.total) * 100;
+      progress.value = pct;
+      progressText.textContent =
+        'Uploading ' + pct.toFixed(1) + '% (' + fmtBytes(ev.loaded) + ' / ' + fmtBytes(ev.total) + ')';
+    }
+  };
+  xhr.onload = () => {
+    progressWrap.style.display = 'none';
+    if (xhr.status >= 200 && xhr.status < 300) {
+      setStatus('Upload complete — running extract-sbom…');
+      startPolling();
+    } else {
+      let msg = 'Upload failed (HTTP ' + xhr.status + ').';
+      try { msg = JSON.parse(xhr.responseText).error || msg; } catch (_) {}
+      setStatus(msg, 'error');
+      submitBtn.disabled = false;
+    }
+  };
+  xhr.onerror = () => {
+    progressWrap.style.display = 'none';
+    setStatus('Network error during upload.', 'error');
+    submitBtn.disabled = false;
+  };
+  xhr.send(fd);
+});
+
+resetBtn.addEventListener('click', async () => {
+  await fetch('/reset', { method: 'POST' });
+  location.reload();
+});
+
+function startPolling() {
+  if (polling) clearInterval(polling);
+  polling = setInterval(poll, 1500);
+  poll();
+}
+
+async function poll() {
+  let r;
+  try {
+    r = await fetch('/status');
+  } catch (_) { return; }
+  if (r.status === 440) {
+    clearInterval(polling); polling = null;
+    setStatus('Session expired. Reload the page.', 'error');
+    submitBtn.disabled = false;
+    return;
+  }
+  const data = await r.json();
+  if (data.state === 'running') {
+    setStatus('extract-sbom is running…');
+    if (data.log) logEl.textContent = data.log;
+    resultCard.style.display = data.log ? 'block' : 'none';
+  } else if (data.state === 'done') {
+    clearInterval(polling); polling = null;
+    submitBtn.disabled = false;
+    if (data.exitCode === 0) {
+      setStatus('Done. Exit code 0.', 'ok');
+    } else {
+      setStatus('extract-sbom exited with code ' + data.exitCode + (data.error ? ' (' + data.error + ')' : ''), 'error');
+    }
+    renderDownloads(data.outputs || []);
+    logEl.textContent = data.log || '(no output captured)';
+    resultCard.style.display = 'block';
+  }
+}
+
+function renderDownloads(files) {
+  downloadsEl.innerHTML = '';
+  if (!files.length) {
+    const li = document.createElement('li');
+    li.textContent = 'No output files were produced.';
+    downloadsEl.appendChild(li);
+    return;
+  }
+  for (const f of files) {
+    const li = document.createElement('li');
+    const a = document.createElement('a');
+    a.href = '/download/' + encodeURIComponent(f.name);
+    a.textContent = f.name;
+    a.download = f.name;
+    const size = document.createElement('span');
+    size.className = 'filesize';
+    size.textContent = fmtBytes(f.size);
+    li.appendChild(a);
+    li.appendChild(size);
+    downloadsEl.appendChild(li);
+  }
+}
+
+// Best-effort cleanup if the tab is closed (reload already calls GET / which
+// destroys the previous session server-side).
+window.addEventListener('pagehide', () => {
+  navigator.sendBeacon && navigator.sendBeacon('/reset');
+});
+</script>
+</body>
+</html>
