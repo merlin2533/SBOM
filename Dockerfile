@@ -9,6 +9,11 @@
 ARG NODE_VERSION=20
 ARG GO_VERSION=1.26
 ARG SYFT_VERSION=v1.16.0
+# Build-time override for the version string displayed in the UI and on
+# /api/health. The GitHub Actions workflow computes
+#   MAJOR.MINOR.<commit_count>+<short_sha>
+# and passes it in; falls back to package.json's static version locally.
+ARG APP_VERSION=
 
 # ----------------------------------------------------------------------------
 # Stage 1 — Go build of vendor/extract-sbom
@@ -92,7 +97,8 @@ COPY --from=node-build --chown=sbom:sbom /app/package.json ./package.json
 
 USER sbom
 
-ENV NODE_ENV=production \
+ENV APP_VERSION=$APP_VERSION \
+    NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
     SCRATCH_DIR=/scratch \

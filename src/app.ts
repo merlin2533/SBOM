@@ -8,7 +8,13 @@ import { marked } from 'marked';
 import type { ServerConfig, SandboxKind } from './types';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require('../package.json') as { version: string };
-const APP_VERSION = pkg.version;
+// In Docker images the CI replaces package.json's static patch with
+// `MAJOR.MINOR.<commit_count>+<short_sha>` via the APP_VERSION env var, so
+// every push to main moves the UI pill forward automatically. Local dev
+// falls back to the package.json value.
+const APP_VERSION = process.env['APP_VERSION'] && process.env['APP_VERSION']!.trim()
+  ? process.env['APP_VERSION']!.trim()
+  : pkg.version;
 import { SessionManager } from './session';
 import { JobRunner } from './job';
 import { createLogger, createHttpLogger } from './logger';
