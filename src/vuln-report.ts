@@ -133,6 +133,24 @@ function buildCsv(matches: GrypeMatch[]): string {
   return BOM + [header, ...rows].join('\r\n') + '\r\n';
 }
 
+// CVE-Alter aus der ID (CVE-YYYY-NNNN) ableiten. Liefert ein farbiges Chip
+// neben der CVE-ID, das auf einen Blick zeigt: dieses Jahr → rot, ≤2 J. →
+// orange, ≤5 J. → gelb, älter → grau.
+function cveAgeChip(id: string | undefined | null): string {
+  if (!id) return '';
+  const m = id.match(/^(?:CVE|GHSA|OSV|RUSTSEC|GLSA|DSA|USN|ALAS)-?(\d{4})[-_]/i);
+  if (!m) return '';
+  const year = parseInt(m[1]!, 10);
+  const yearsOld = Math.max(0, new Date().getFullYear() - year);
+  let bg: string, fg: string, border: string;
+  if (yearsOld === 0)      { bg = '#fee2e2'; fg = '#7f1d1d'; border = '#b91c1c'; }
+  else if (yearsOld <= 2)  { bg = '#ffedd5'; fg = '#9a3412'; border = '#ea580c'; }
+  else if (yearsOld <= 5)  { bg = '#fef9c3'; fg = '#854d0e'; border = '#ca8a04'; }
+  else                     { bg = '#f3f4f6'; fg = '#4b5563'; border = '#9ca3af'; }
+  const label = yearsOld === 0 ? `${year} · neu` : `${year} · ${yearsOld} J.`;
+  return `<span class="cve-age" title="CVE-Jahr: ${year}" style="background:${bg};color:${fg};border-color:${border}">${label}</span>`;
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>)[c]!
@@ -237,7 +255,7 @@ function buildHtmlReport(opts: {
       const desc = (v.description ?? '').replace(/\s+/g, ' ').trim();
       return `
         <tr>
-          <td class="cve mono">${escapeHtml(v.id ?? '?')}</td>
+          <td class="cve mono">${escapeHtml(v.id ?? '?')}${cveAgeChip(v.id)}</td>
           <td class="pkg">
             <strong>${escapeHtml(a.name ?? '?')}</strong>
             <span class="muted">@</span>
@@ -344,6 +362,10 @@ th{background:var(--accent-soft);color:var(--accent);font-weight:600;font-size:.
 text-transform:uppercase;letter-spacing:.07em}
 tr:last-child td{border-bottom:0}
 td.cve{white-space:nowrap;font-size:.85rem;font-weight:600}
+.cve-age{display:inline-block;margin-left:.35rem;padding:.05rem .4rem;font-size:.72rem;
+font-weight:600;border-radius:999px;border:1px solid currentColor;
+font-family:"Inter",ui-sans-serif,system-ui,sans-serif;vertical-align:middle;
+line-height:1.4;letter-spacing:0;white-space:nowrap}
 td.score{white-space:nowrap;font-variant-numeric:tabular-nums;width:60px;text-align:right}
 td.fix{white-space:nowrap;font-size:.85rem}
 td.pkg{min-width:160px}

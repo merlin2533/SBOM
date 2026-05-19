@@ -205,6 +205,56 @@ function computeRating(r: RatingInput): RatingResult {
   return { score, grade, label, explain, color, reasons: reasons.slice(0, 5) };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CVE-Alter aus der CVE-ID ableiten
+// ─────────────────────────────────────────────────────────────────────────────
+function cveYear(id: string | undefined | null): number | null {
+  if (!id) return null;
+  const m = id.match(/^(?:CVE|GHSA|OSV|RUSTSEC|GLSA|DSA|USN|ALAS)-?(\d{4})[-_]/i);
+  return m ? parseInt(m[1]!, 10) : null;
+}
+
+interface CveAge {
+  year: number;
+  yearsOld: number;
+  // tier 0 = same year (frisch), 1 = 1-2J, 2 = 3-5J, 3 = älter
+  tier: 0 | 1 | 2 | 3;
+  label: string;            // z.B. "2023 · vor 2 J."
+  color: { fg: string; bg: string; border: string };
+}
+
+function cveAge(id: string | undefined | null, now: Date = new Date()): CveAge | null {
+  const year = cveYear(id);
+  if (year === null) return null;
+  const yearsOld = Math.max(0, now.getFullYear() - year);
+  let tier: CveAge['tier'];
+  let color: { fg: string; bg: string; border: string };
+  if (yearsOld === 0) {
+    tier = 0;
+    color = { fg: '#7f1d1d', bg: '#fee2e2', border: '#b91c1c' };  // frisch — rot
+  } else if (yearsOld <= 2) {
+    tier = 1;
+    color = { fg: '#9a3412', bg: '#ffedd5', border: '#ea580c' };  // orange
+  } else if (yearsOld <= 5) {
+    tier = 2;
+    color = { fg: '#854d0e', bg: '#fef9c3', border: '#ca8a04' };  // gelb
+  } else {
+    tier = 3;
+    color = { fg: '#4b5563', bg: '#f3f4f6', border: '#9ca3af' };  // grau (alt)
+  }
+  const label = yearsOld === 0
+    ? `${year} · neu`
+    : `${year} · ${yearsOld} J.`;
+  return { year, yearsOld, tier, label, color };
+}
+
+function cveAgeChip(id: string | undefined | null): string {
+  const a = cveAge(id);
+  if (!a) return '';
+  return `<span class="cve-age" title="CVE-Jahr: ${a.year}"
+    style="background:${a.color.bg};color:${a.color.fg};border-color:${a.color.border}">${a.label}</span>`;
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>)[c]!
@@ -545,7 +595,7 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
       const anchorId = `cve-${(v.id ?? 'unknown').replace(/[^a-zA-Z0-9-]/g, '-')}`;
       return `
         <tr id="${anchorId}">
-          <td class="mono small">${cveId}</td>
+          <td class="mono small">${cveId}${cveAgeChip(v.id)}</td>
           <td>
             <strong>${escapeHtml(a.name ?? '?')}</strong>
             <span class="muted small">@${escapeHtml(a.version ?? '?')}</span>
@@ -612,7 +662,10 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
       const cveId = v.id ?? '?';
       const anchorId = `cve-${cveId.replace(/[^a-zA-Z0-9-]/g, '-')}`;
       return `<tr style="cursor:pointer" onclick="document.getElementById('${anchorId}')&&(document.getElementById('${anchorId}').closest('details')||document.body).setAttribute('open',''),document.getElementById('${anchorId}')?.closest('details')?.setAttribute('open',''),document.getElementById('${anchorId}')?.scrollIntoView({behavior:'smooth',block:'center'})">
-        <td class="mono small"><a href="#${anchorId}" onclick="event.stopPropagation()">${escapeHtml(cveId)}</a></td>
+        <td class="mono small">
+          <a href="#${anchorId}" onclick="event.stopPropagation()">${escapeHtml(cveId)}</a>
+          ${cveAgeChip(cveId)}
+        </td>
         <td><span class="sev-badge" style="background:${c.border};color:#fff;font-size:.72rem;padding:.15rem .5rem;border-radius:999px">${sev}</span></td>
         <td class="mono small">${escapeHtml(a.name ?? '?')}@${escapeHtml(a.version ?? '?')}</td>
         <td class="mono small">${score != null ? score.toFixed(1) : '—'}</td>
@@ -833,6 +886,10 @@ background:var(--card);border-bottom:1px solid var(--border)}
 border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
 .tbl-filter:focus{outline:2px solid var(--accent);outline-offset:1px}
 .filter-count{white-space:nowrap;font-size:.78rem;color:var(--muted)}
+.cve-age{display:inline-block;margin-left:.35rem;padding:.05rem .4rem;font-size:.72rem;
+font-weight:600;border-radius:999px;border:1px solid currentColor;
+font-family:"Inter",ui-sans-serif,system-ui,sans-serif;vertical-align:middle;
+line-height:1.4;letter-spacing:0;white-space:nowrap}
 .top-risks-card{border-left:4px solid #b91c1c;background:#fff5f5;border-radius:10px;
 padding:1rem 1.2rem;margin:.8rem 0}
 @media (prefers-color-scheme:dark){.top-risks-card{background:#1c0a0a}}
