@@ -176,7 +176,7 @@ export class JobRunner {
       this.logger.error({ sid: sess.sid, jobId: job.id }, e.message);
     });
 
-    child.on('close', async (code, signal) => {
+    child.on('exit', async (code, signal) => {
       job.exitCode = code;
       job.signal = signal as NodeJS.Signals | null;
       job.finishedAt = Date.now();

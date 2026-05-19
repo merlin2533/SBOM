@@ -340,7 +340,7 @@ export function createApp(config: ServerConfig): AppResult {
                 resolve();
                 return;
               }
-              job.child.once('close', () => resolve());
+              job.child.once('exit', () => resolve());
             })
         )
       );
