@@ -70,6 +70,7 @@ export interface Job {
   phase: string | null;
   progress: number | null;
   sandbox: SandboxKind;
+  inputSha256: string | null;
 }
 
 export interface Session {

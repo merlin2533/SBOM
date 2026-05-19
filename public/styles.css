@@ -926,6 +926,94 @@ footer {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+
+/* ============================================================================
+   Primärer Output (summary.html) prominent über den anderen Dateien
+   ========================================================================= */
+.primary-output { margin-bottom: .7rem; }
+.dl-item.primary {
+  background: linear-gradient(135deg, var(--accent-soft) 0%, var(--bg-2) 100%);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.dl-item.primary .dl-name {
+  color: var(--accent);
+  font-weight: 700;
+}
+.dl-btn.primary {
+  background: var(--accent);
+  color: white !important;
+  border-color: var(--accent);
+}
+.dl-btn.primary:hover { background: var(--accent-hover); }
+
+/* „Weitere Dateien"-Aufklapp-Block */
+details.other-outputs {
+  margin-top: .4rem;
+  border-top: 1px dashed var(--border);
+  padding-top: .55rem;
+}
+details.other-outputs > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: .82rem;
+  font-weight: 600;
+  color: var(--muted-strong);
+  padding: .25rem 0;
+  user-select: none;
+}
+details.other-outputs > summary::-webkit-details-marker { display: none; }
+details.other-outputs > summary:hover { color: var(--accent); }
+details.other-outputs .caret {
+  display: inline-block;
+  transition: transform .15s var(--ease);
+  margin-right: .3rem;
+  opacity: .6;
+}
+details.other-outputs[open] .caret { transform: rotate(90deg); }
+details.other-outputs > ul { margin-top: .4rem; }
+
+/* Footer der Job-Karte mit Bundle-Download */
+.job-card-footer {
+  margin-top: .8rem;
+  padding-top: .7rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+}
+.dl-btn.bundle-btn {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: rgba(0, 43, 127, .3);
+  font-weight: 600;
+}
+.dl-btn.bundle-btn:hover {
+  background: var(--accent);
+  color: white !important;
+}
+
+/* ============================================================================
+   Print-Stylesheet
+   ========================================================================= */
+@media print {
+  body { background: white; color: black; }
+  .bg, .topbar, button, .actions, footer, .toast,
+  #uploadCard, #activeJob, .viewer-modal,
+  .job-card-toggle, .icon-btn { display: none !important; }
+  main { padding: 0 !important; }
+  .card {
+    box-shadow: none !important;
+    border: 1px solid #ccc !important;
+    page-break-inside: avoid;
+    background: white !important;
+    color: black !important;
+  }
+  .job-card { page-break-inside: avoid; }
+  .job-card .job-card-detail { display: block !important; }   /* alles aufklappen */
+  details, details[open], details:not([open]) { display: block !important; }
+  details > * { display: block !important; }
+  .dl-item .dl-actions { display: none; }
+}
 footer em {
   font-style: normal;
   font-weight: 600;

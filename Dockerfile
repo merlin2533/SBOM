@@ -100,6 +100,10 @@ RUN apt-get update \
  # extract-sbom prefers den kanonischen Namen 7zz; Debian installiert 7z.
  # Symlink, damit der Report „Using 7zz" sagt statt auf den Fallback geht.
  && ln -s "$(command -v 7z)" /usr/local/bin/7zz \
+ # cosign: optionales Signieren von Output-Artefakten.
+ && curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+      -o /usr/local/bin/cosign \
+ && chmod +x /usr/local/bin/cosign \
  && rm -rf /var/lib/apt/lists/*
 
 # extract-sbom binary from stage 1.

@@ -13,6 +13,12 @@ import { preExtract, cleanupPreExtract, PreExtractResult } from './pre-extract';
 import { runVulnReport } from './vuln-report';
 import { buildSummaryReport } from './summary-report';
 import { writeVexSkeleton } from './vex-template';
+import { writeAuditEntry } from './audit-log';
+import { hashFile, lookup, register } from './hash-cache';
+import { writeOpenVex } from './openvex';
+import { writeCsaf } from './csaf';
+import { writeSlsa } from './slsa';
+import { signWithCosign } from './cosign';
 
 export interface EnqueueOpts {
   uploadPath: string;
@@ -60,6 +66,7 @@ export class JobRunner {
       phase: null,
       progress: null,
       sandbox: this.sandboxKind,
+      inputSha256: null,
     };
 
     // Stash plaintext passwords temporarily until the job is launched;
@@ -95,6 +102,77 @@ export class JobRunner {
 
   private async launchJob(sess: Session, job: Job): Promise<void> {
     const { passwords } = await this.preparePasswords(sess, job);
+
+    // Audit: job_started
+    writeAuditEntry({
+      ts: new Date().toISOString(),
+      event: 'job_started',
+      sid: sess.sid,
+      jobId: job.id,
+      inputName: job.inputName,
+      inputSize: job.inputSize,
+    }).catch(() => {});
+
+    // Hash-Cache: berechne SHA-256 des Uploads und prüfe ob bereits analysiert.
+    let inputHash: string | null = null;
+    try {
+      inputHash = await hashFile(job.uploadPath);
+      job.inputSha256 = inputHash;
+    } catch (e) {
+      this.logger.warn({ jobId: job.id, err: e }, 'hash-cache: could not hash upload (non-fatal)');
+    }
+
+    if (inputHash) {
+      const cached = lookup(inputHash);
+      if (cached) {
+        // Cache-Hit: Outputs aus dem Quell-Job kopieren
+        this.sessions.pushLog(sess, job, 'stdout',
+          `[cache] Hash ${inputHash.slice(0, 16)}… bekannt aus Job ${cached.sourceJobId} — Resultate wiederverwendet`);
+        let cacheApplied = false;
+        try {
+          await fsp.cp(cached.sourceOutDir, job.outDir, { recursive: true });
+          cacheApplied = true;
+        } catch (e) {
+          this.logger.warn({ jobId: job.id, err: e }, 'hash-cache: cp failed, falling through to fresh run');
+        }
+
+        if (cacheApplied) {
+          // Cleanup upload immediately (same as in exit handler)
+          await shredUnlink(job.passwordFile);
+          job.passwordFile = null;
+          try { await fsp.unlink(job.uploadPath); } catch (_) {}
+
+          job.state = 'done';
+          job.startedAt = Date.now();
+          job.finishedAt = Date.now();
+          job.exitCode = 0;
+
+          await this.sessions.refreshOutputs(sess, job);
+          this.sessions.touch(sess);
+          this.sessions.broadcast(sess, 'state', this.sessions.snapshot(sess));
+
+          this.logger.info(
+            { sid: sess.sid, jobId: job.id, sourceJobId: cached.sourceJobId },
+            'job finished (cache hit)'
+          );
+
+          writeAuditEntry({
+            ts: new Date().toISOString(),
+            event: 'job_finished',
+            sid: sess.sid,
+            jobId: job.id,
+            inputName: job.inputName,
+            inputSha256: inputHash,
+            state: 'done',
+            durationMs: 0,
+            cacheHit: true,
+          }).catch(() => {});
+
+          this.runNext(sess);
+          return;
+        }
+      }
+    }
 
     // Pre-Extract: extract-sbom kennt nur Container-Formate per Magic-Bytes.
     // Für reine `.exe`-Installer (Inno Setup, NSIS, ...) versuchen wir, das
@@ -342,12 +420,83 @@ export class JobRunner {
               } catch (e) {
                 this.logger.warn({ jobId: job.id, err: e }, 'vex: generation failed (non-fatal)');
               }
+
+              // 5. OpenVEX
+              try {
+                await writeOpenVex({
+                  grypeJsonPath: vr.jsonPath,
+                  outDir: job.outDir,
+                  inputName: job.inputName,
+                  jobId: job.id,
+                  logger: this.logger,
+                });
+                this.sessions.pushLog(sess, job, 'stdout', '[openvex] geschrieben');
+              } catch (e) {
+                this.logger.warn({ jobId: job.id, err: e }, 'openvex: generation failed (non-fatal)');
+              }
+
+              // 6. CSAF
+              try {
+                await writeCsaf({
+                  grypeJsonPath: vr.jsonPath,
+                  outDir: job.outDir,
+                  inputName: job.inputName,
+                  jobId: job.id,
+                  logger: this.logger,
+                });
+                this.sessions.pushLog(sess, job, 'stdout', '[csaf] geschrieben');
+              } catch (e) {
+                this.logger.warn({ jobId: job.id, err: e }, 'csaf: generation failed (non-fatal)');
+              }
+            }
+
+            // 7. SLSA Provenance
+            try {
+              await writeSlsa({
+                cdxJsonPath: cdxPath,
+                outDir: job.outDir,
+                inputName: job.inputName,
+                inputSha256: job.inputSha256,
+                jobId: job.id,
+                logger: this.logger,
+              });
+              this.sessions.pushLog(sess, job, 'stdout', '[slsa] geschrieben');
+            } catch (e) {
+              this.logger.warn({ jobId: job.id, err: e }, 'slsa: generation failed (non-fatal)');
+            }
+
+            // 8. Cosign Signing (optional, only if env keys set)
+            try {
+              const allEntries = await fsp.readdir(job.outDir);
+              const filesToSign = allEntries
+                .filter((n) => /\.(json|html)$/i.test(n))
+                .map((n) => path.join(job.outDir, n));
+              await signWithCosign({ filesToSign, outDir: job.outDir, logger: this.logger });
+            } catch (e) {
+              this.logger.warn({ jobId: job.id, err: e }, 'cosign: signing failed (non-fatal)');
             }
           }
         } catch (e) {
           this.logger.warn({ jobId: job.id, err: e }, 'vuln-report failed');
         }
       }
+
+      // Hash-Cache: Ergebnis registrieren (nur bei erfolgreichen Jobs)
+      if (job.state === 'done' && inputHash) {
+        register(inputHash, job.id, job.outDir);
+      }
+
+      // Audit: job_finished
+      writeAuditEntry({
+        ts: new Date().toISOString(),
+        event: 'job_finished',
+        sid: sess.sid,
+        jobId: job.id,
+        inputName: job.inputName,
+        inputSha256: job.inputSha256 ?? undefined,
+        state: job.state,
+        durationMs: job.startedAt ? Date.now() - job.startedAt : 0,
+      }).catch(() => {});
 
       await this.sessions.refreshOutputs(sess, job);
       this.sessions.touch(sess);

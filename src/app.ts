@@ -26,6 +26,7 @@ import {
   rateLimitUpload,
 } from './security';
 import { createTusHandler } from './tus-handler';
+import { writeAuditEntry } from './audit-log';
 
 // Markdown renderer: GitHub-flavoured, line breaks honoured, no smartypants
 // surprises. marked.parse is synchronous in default mode.
@@ -344,6 +345,11 @@ export function createApp(config: ServerConfig): AppResult {
     let sess = sessions.get(prev);
     if (!sess) {
       sess = sessions.create();
+      writeAuditEntry({
+        ts: new Date().toISOString(),
+        event: 'session_created',
+        sid: sess.sid,
+      }).catch(() => {});
     } else {
       sessions.touch(sess);
     }
@@ -587,6 +593,88 @@ export function createApp(config: ServerConfig): AppResult {
     }
   );
 
+  // --- GET /api/bundle/:jobId — ZIP aller Job-Outputs ------------------
+  app.get(
+    '/api/bundle/:jobId',
+    sameOriginOnly,
+    async (req: Request, res: Response) => {
+      const jobId = req.params['jobId'];
+      const job = findJobAcrossSessions(jobId);
+      if (!job) {
+        res.status(404).json({ error: 'Job not found.' });
+        return;
+      }
+      if (job.state !== 'done' && job.state !== 'failed') {
+        res.status(409).json({ error: 'Job not finished.' });
+        return;
+      }
+
+      // Build the ZIP in a temp file, then stream it.
+      const os = await import('os');
+      const tmpDir = os.tmpdir();
+      const jobOutDir = job.outDir;
+      const zipName = `${path.basename(job.inputName, path.extname(job.inputName))}.bundle.zip`;
+      const tmpZip = path.join(tmpDir, `sbom-bundle-${jobId}-${Date.now()}.zip`);
+
+      // Try 'zip' first, fall back to '7z'
+      const { spawn: spawnZip } = await import('child_process');
+
+      async function tryZipTool(tool: string, args: string[]): Promise<number> {
+        return new Promise((resolve) => {
+          const child = spawnZip(tool, args, {
+            stdio: ['ignore', 'ignore', 'pipe'],
+            cwd: jobOutDir,
+          });
+          const t = setTimeout(() => {
+            try { child.kill('SIGKILL'); } catch (_) {}
+          }, 60_000);
+          child.on('exit', (code) => {
+            clearTimeout(t);
+            resolve(code ?? -1);
+          });
+          child.on('error', () => {
+            clearTimeout(t);
+            resolve(-1);
+          });
+        });
+      }
+
+      let zipOk = false;
+
+      // Attempt 1: zip -r tmpZip .
+      const code1 = await tryZipTool('zip', ['-r', tmpZip, '.']);
+      if (code1 === 0) {
+        zipOk = true;
+      }
+
+      if (!zipOk) {
+        // Attempt 2: 7z a -tzip tmpZip .
+        const code2 = await tryZipTool('7z', ['a', '-tzip', tmpZip, '.']);
+        if (code2 === 0) zipOk = true;
+      }
+
+      if (!zipOk) {
+        try { await fsp.unlink(tmpZip); } catch (_) {}
+        res.status(500).json({ error: 'Could not create ZIP archive (zip/7z not available).' });
+        return;
+      }
+
+      res.setHeader('Cache-Control', 'no-store, private');
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${encodeURIComponent(zipName)}"`
+      );
+
+      res.download(tmpZip, zipName, (err) => {
+        if (err && !res.headersSent) {
+          logger.warn({ jobId, err }, 'bundle: download error');
+        }
+        fsp.unlink(tmpZip).catch(() => {});
+      });
+    }
+  );
+
   // --- POST /api/reset ------------------------------------------------
   app.post(
     '/api/reset',
@@ -594,7 +682,14 @@ export function createApp(config: ServerConfig): AppResult {
     jsonParser,
     async (req: Request, res: Response) => {
       const sid = req.cookies?.['sid'] as string | undefined;
-      if (sid) await sessions.destroy(sid);
+      if (sid) {
+        writeAuditEntry({
+          ts: new Date().toISOString(),
+          event: 'session_destroyed',
+          sid,
+        }).catch(() => {});
+        await sessions.destroy(sid);
+      }
       res.clearCookie('sid', { path: '/' });
       res.json({ ok: true });
     }

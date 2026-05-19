@@ -483,21 +483,33 @@ function updateJobCard(li: HTMLLIElement, job: JobSnapshot): void {
     : job.startedAt ? 'läuft …' : '—';
 
   // Files that we render in-browser as a styled HTML page get an extra
-  // "Ansicht" button in front of the regular Download link.
+  // Alle Output-Dateien sind ansehbar — server-seitig render /api/view die
+  // .md → marked, .json → pretty+highlight, .html → 1:1 direkt, .txt/.log
+  // als pre. Nur reine Binär-Dateien fallen auf 302→Download zurück.
   const isViewable = (name: string): boolean => {
     const n = name.toLowerCase();
     return n.endsWith('.md') || n.endsWith('.markdown') ||
-           n.endsWith('.json') || n.endsWith('.txt') || n.endsWith('.log');
+           n.endsWith('.json') || n.endsWith('.html') ||
+           n.endsWith('.txt') || n.endsWith('.log') ||
+           n.endsWith('.csv');
   };
 
-  const outputsHtml = (job.outputs || []).map((f) => {
-    // ?sid= damit Direkt-Navigationen ohne Cookie nicht ins 440 laufen
+  // Klassifizierung der Outputs: Summary ist der „primäre" Eintrag (oben,
+  // dauerhaft sichtbar). Alle anderen Dateien kommen in ein aufklappbares
+  // <details>-Panel darunter.
+  const splitOutputs = (files: typeof job.outputs) => {
+    const summary = files.find((f) => /\.summary\.html$/i.test(f.name)) ?? null;
+    const rest = files.filter((f) => f !== summary);
+    return { summary, rest };
+  };
+
+  const renderDlItem = (f: typeof job.outputs[number], opts: { primary?: boolean } = {}): string => {
     const dl = withSid(`/api/download/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`);
     const view = withSid(`/api/view/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`);
     const viewDl = withSid(`/api/view/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}${SID ? '&' : '?'}download=1`);
     const viewable = isViewable(f.name);
     const viewBtn = viewable
-      ? `<button type="button" class="dl-btn js-view"
+      ? `<button type="button" class="dl-btn ${opts.primary ? 'primary' : ''} js-view"
               data-view-url="${view}"
               data-view-name="${escapeHtml(f.name)}">
            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -514,7 +526,7 @@ function updateJobCard(li: HTMLLIElement, job: JobSnapshot): void {
            </svg>Als&nbsp;HTML
          </a>`
       : '';
-    return `<li class="dl-item">
+    return `<li class="dl-item ${opts.primary ? 'primary' : ''}">
       <div class="dl-name">${escapeHtml(f.name)}</div>
       <div class="filesize">${fmtBytes(f.size)}</div>
       <div class="dl-actions">
@@ -529,7 +541,35 @@ function updateJobCard(li: HTMLLIElement, job: JobSnapshot): void {
         </a>
       </div>
     </li>`;
-  }).join('');
+  };
+
+  const split = splitOutputs(job.outputs || []);
+
+  const summaryHtml = split.summary
+    ? `<ul class="downloads job-downloads primary-output">${renderDlItem(split.summary, { primary: true })}</ul>`
+    : '';
+
+  const restHtml = split.rest.length > 0
+    ? `<details class="other-outputs">
+         <summary><span class="caret" aria-hidden="true">▸</span> Weitere Dateien (${split.rest.length})</summary>
+         <ul class="downloads job-downloads">${split.rest.map((f) => renderDlItem(f)).join('')}</ul>
+       </details>`
+    : '';
+
+  const noOutputsHtml = (job.outputs || []).length === 0
+    ? '<p class="muted small">Keine Ausgabedateien.</p>'
+    : '';
+
+  // „Alles als ZIP"-Button — verlinkt auf /api/bundle/:jobId (vom Backend
+  // im selben PR neu implementiert). Nur sinnvoll wenn es überhaupt Outputs
+  // gibt.
+  const bundleBtn = (job.outputs || []).length > 0
+    ? `<a href="${withSid(`/api/bundle/${encodeURIComponent(job.id)}`)}" class="dl-btn bundle-btn">
+         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+           <path d="M21 8v13H3V8M1 3h22v5H1zm10 7h2"/>
+         </svg>Alles als ZIP herunterladen
+       </a>`
+    : '';
 
   const errorHtml = job.error
     ? `<div class="job-error muted small">${escapeHtml(job.error)}</div>`
@@ -545,7 +585,10 @@ function updateJobCard(li: HTMLLIElement, job: JobSnapshot): void {
     </div>
     <div class="job-card-detail">
       ${errorHtml}
-      ${outputsHtml ? `<ul class="downloads job-downloads">${outputsHtml}</ul>` : '<p class="muted small">Keine Ausgabedateien.</p>'}
+      ${summaryHtml}
+      ${restHtml}
+      ${noOutputsHtml}
+      ${bundleBtn ? `<div class="job-card-footer">${bundleBtn}</div>` : ''}
     </div>
   `;
 }
