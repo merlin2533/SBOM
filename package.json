@@ -2,7 +2,14 @@
   "name": "sbom-upload-app",
   "version": "2.0.0",
   "description": "Ephemeral, self-hosted web frontend that wraps TomTonic/extract-sbom: resumable uploads, sandboxed analysis, downloadable CycloneDX SBOM and audit report.",
-  "keywords": ["sbom", "cyclonedx", "extract-sbom", "supply-chain", "syft", "audit"],
+  "keywords": [
+    "sbom",
+    "cyclonedx",
+    "extract-sbom",
+    "supply-chain",
+    "syft",
+    "audit"
+  ],
   "license": "MIT",
   "homepage": "https://github.com/merlin2533/sbom",
   "repository": {
@@ -33,6 +40,7 @@
     "@tus/server": "^1.10.0",
     "cookie-parser": "^1.4.7",
     "express": "^4.21.1",
+    "marked": "^18.0.4",
     "pino": "^9.5.0",
     "pino-http": "^10.3.0"
   },

@@ -4,6 +4,7 @@ import fs from 'fs';
 import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import pino from 'pino';
+import { marked } from 'marked';
 import type { ServerConfig, SandboxKind } from './types';
 import { SessionManager } from './session';
 import { JobRunner } from './job';
@@ -16,6 +17,110 @@ import {
   rateLimitUpload,
 } from './security';
 import { createTusHandler } from './tus-handler';
+
+// Markdown renderer: GitHub-flavoured, line breaks honoured, no smartypants
+// surprises. marked.parse is synchronous in default mode.
+marked.setOptions({ gfm: true, breaks: false });
+
+// Escape user-provided strings for safe inclusion in HTML.
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>)[c]!
+  );
+}
+
+// Standalone HTML viewer for SBOM/report files. Inlines our colour palette
+// so it renders nicely even when opened in a fresh tab.
+function renderViewerPage(opts: {
+  title: string;
+  bodyHtml: string;
+  downloadUrl: string;
+  rawName: string;
+}): string {
+  return `<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${escapeHtml(opts.title)} — SBOM-Extraktor</title>
+<style>
+:root{color-scheme:light dark;
+--bg:#f6f7fb;--card:#fff;--fg:#0e1320;--muted:#6a7184;--border:#e3e7f1;
+--accent:#002b7f;--accent-2:#1a4fb0;--accent-soft:#e6ecf6;
+--code-bg:#0a0c14;--code-fg:#d4dbe6;}
+@media (prefers-color-scheme:dark){:root{
+--bg:#07090f;--card:#10131c;--fg:#ecf0f6;--muted:#8a93a8;--border:#232a3a;
+--accent:#6c8dd9;--accent-2:#8aa9ea;--accent-soft:#0e1a35;}}
+*{box-sizing:border-box}
+body{margin:0;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);
+font-family:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+line-height:1.6;font-size:15px;-webkit-font-smoothing:antialiased}
+main{max-width:980px;margin:0 auto;background:var(--card);border:1px solid var(--border);
+border-radius:16px;padding:2rem 2.2rem;box-shadow:0 6px 24px rgba(0,43,127,.08)}
+header.viewer{display:flex;justify-content:space-between;align-items:center;gap:1rem;
+padding-bottom:1rem;margin-bottom:1.4rem;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.viewer-title{font-size:.78rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:.5rem}
+.viewer-title::before{content:"";width:4px;height:14px;border-radius:2px;background:linear-gradient(180deg,var(--accent),var(--accent-2))}
+.viewer-name{font-family:ui-monospace,Menlo,monospace;font-size:.9rem;color:var(--fg)}
+.viewer-actions{display:flex;gap:.5rem;flex-wrap:wrap}
+.viewer-actions a{text-decoration:none;font-weight:600;padding:.5rem .85rem;border-radius:8px;font-size:.85rem;
+border:1px solid var(--border);color:var(--accent);background:var(--card);transition:all .15s}
+.viewer-actions a:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.viewer-actions a.secondary{color:var(--muted)}
+.viewer-actions a.secondary:hover{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+h1,h2,h3,h4{letter-spacing:-.01em;line-height:1.25;margin-top:1.6em}
+h1{font-size:1.7rem;margin-top:0;color:var(--accent)}
+h2{font-size:1.3rem;border-bottom:1px solid var(--border);padding-bottom:.3rem}
+h3{font-size:1.1rem}
+p,ul,ol{margin:.7em 0}
+a{color:var(--accent)}
+ul,ol{padding-left:1.4rem}
+li{margin:.2em 0}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em;background:var(--accent-soft);padding:.06em .35em;border-radius:4px;color:var(--accent)}
+pre{background:var(--code-bg);color:var(--code-fg);padding:1rem 1.1rem;border-radius:10px;overflow:auto;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.8rem;line-height:1.55;border:1px solid var(--border)}
+pre code{background:transparent;color:inherit;padding:0;font-size:inherit}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:.92em}
+th,td{padding:.5rem .7rem;border:1px solid var(--border);text-align:left}
+th{background:var(--accent-soft);color:var(--accent);font-weight:600}
+tr:nth-child(even) td{background:rgba(0,43,127,.03)}
+blockquote{border-left:3px solid var(--accent);padding-left:1rem;color:var(--muted);margin:.7em 0}
+hr{border:none;border-top:1px solid var(--border);margin:2rem 0}
+.json-pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.json-pre .k{color:#7aa9ff}.json-pre .s{color:#9be7a3}.json-pre .n{color:#f0c674}.json-pre .b{color:#f08080}
+</style>
+</head>
+<body>
+<main>
+  <header class="viewer">
+    <div>
+      <div class="viewer-title">Bericht</div>
+      <div class="viewer-name">${escapeHtml(opts.rawName)}</div>
+    </div>
+    <div class="viewer-actions">
+      <a href="${opts.downloadUrl}" download="${escapeHtml(opts.rawName)}">Herunterladen</a>
+      <a href="javascript:history.back()" class="secondary">Zurück</a>
+    </div>
+  </header>
+  ${opts.bodyHtml}
+</main>
+</body>
+</html>`;
+}
+
+// Syntax-highlight a JSON document. Tiny regex-based highlighter so we don't
+// pull in another dependency just for one viewer page.
+function highlightJson(json: string): string {
+  return escapeHtml(json).replace(
+    /("([^"\\]|\\.)*")(\s*:)?|\b(true|false|null)\b|-?\d+(\.\d+)?([eE][+-]?\d+)?/g,
+    (m, _str, _u, colon, bool) => {
+      if (colon) return `<span class="k">${m}</span>`;
+      if (bool) return `<span class="b">${m}</span>`;
+      if (m.startsWith('"')) return `<span class="s">${m}</span>`;
+      return `<span class="n">${m}</span>`;
+    }
+  );
+}
 
 async function rmrf(dir: string): Promise<void> {
   if (!dir) return;
@@ -288,6 +393,65 @@ export function createApp(config: ServerConfig): AppResult {
       }
       res.setHeader('Cache-Control', 'no-store, private');
       res.download(full, name);
+    }
+  );
+
+  // --- GET /api/view/:jobId/:name ------------------------------------
+  // Render Markdown / JSON / text output files as a styled HTML page so
+  // the browser can display them without forcing a download. Anything we
+  // don't recognise falls back to the download endpoint via 302.
+  app.get(
+    '/api/view/:jobId/:name',
+    sameOriginOnly,
+    async (req: Request, res: Response) => {
+      const sess = requireSession(req, res);
+      if (!sess) return;
+
+      const jobId = req.params['jobId'];
+      const job = sess.jobs.find((j) => j.id === jobId);
+      if (!job) { res.status(404).send('Job not found.'); return; }
+      if (job.state !== 'done' && job.state !== 'failed') {
+        res.status(409).send('Job not finished.'); return;
+      }
+
+      const name = path.basename(req.params['name'] ?? '');
+      const full = path.resolve(job.outDir, name);
+      if (!full.startsWith(job.outDir + path.sep) && full !== job.outDir) {
+        res.status(400).send('Bad path.'); return;
+      }
+      let buf: Buffer;
+      try { buf = await fsp.readFile(full); }
+      catch { res.status(404).send('Not found.'); return; }
+
+      const downloadUrl = `/api/download/${encodeURIComponent(jobId!)}/${encodeURIComponent(name)}`;
+      const lower = name.toLowerCase();
+      let bodyHtml: string;
+
+      if (lower.endsWith('.md') || lower.endsWith('.markdown')) {
+        // Trusted source: extract-sbom's own audit report. marked renders to HTML.
+        bodyHtml = marked.parse(buf.toString('utf8'), { async: false }) as string;
+      } else if (lower.endsWith('.json')) {
+        let text = buf.toString('utf8');
+        try {
+          text = JSON.stringify(JSON.parse(text), null, 2);
+        } catch { /* leave as-is if it isn't valid JSON */ }
+        bodyHtml = `<pre class="json-pre"><code>${highlightJson(text)}</code></pre>`;
+      } else if (lower.endsWith('.txt') || lower.endsWith('.log')) {
+        bodyHtml = `<pre><code>${escapeHtml(buf.toString('utf8'))}</code></pre>`;
+      } else {
+        // Binary or unknown: send the user to the download endpoint.
+        res.redirect(302, downloadUrl);
+        return;
+      }
+
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, private');
+      res.send(renderViewerPage({
+        title: name,
+        bodyHtml,
+        downloadUrl,
+        rawName: name,
+      }));
     }
   );
 

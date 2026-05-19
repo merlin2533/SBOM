@@ -79,6 +79,37 @@ interface LogEntry {
 }
 
 // ─────────────────────────────────────────────
+// Deutsche Beschriftungen
+// ─────────────────────────────────────────────
+const STATE_LABEL: Record<string, string> = {
+  idle:       'bereit',
+  queued:     'wartet',
+  running:    'läuft',
+  done:       'fertig',
+  failed:     'fehlgeschlagen',
+  cancelled:  'abgebrochen',
+};
+
+const PHASE_LABEL: Record<string, string> = {
+  'starting':              'startet',
+  'extracting':            'entpackt',
+  'cataloging':            'katalogisiert',
+  'vulnerability scan':    'Schwachstellen-Scan',
+  'writing report':        'schreibt Bericht',
+  'finishing':             'schließt ab',
+};
+
+// Translate a server-provided state for display. Falls back to the raw key.
+function tState(s: string | null | undefined): string {
+  if (!s) return '—';
+  return STATE_LABEL[s] ?? s;
+}
+function tPhase(p: string | null | undefined): string {
+  if (!p) return '';
+  return PHASE_LABEL[p] ?? p;
+}
+
+// ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
 function fmtBytes(n: number | null | undefined): string {
@@ -249,7 +280,7 @@ function refreshPwCount(): void {
     .split(/\r?\n/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0 && !s.startsWith('#'));
-  pwCountEl.textContent = entries.length + ' ' + (entries.length === 1 ? 'entry' : 'entries');
+  pwCountEl.textContent = entries.length + ' ' + (entries.length === 1 ? 'Eintrag' : 'Einträge');
 }
 passwordsEl.addEventListener('input', refreshPwCount);
 refreshPwCount();
@@ -297,13 +328,13 @@ function appendActiveLog(entries: LogEntry[]): void {
   ajLogEl.appendChild(frag);
   // Keep DOM bounded
   while (ajLogEl.childNodes.length > 4000) ajLogEl.removeChild(ajLogEl.firstChild!);
-  ajLogCount.textContent = ajLogEl.childNodes.length + ' lines';
+  ajLogCount.textContent = ajLogEl.childNodes.length + ' Zeilen';
   if (atBottom) ajLogEl.scrollTop = ajLogEl.scrollHeight;
 }
 
 function clearActiveLog(): void {
   ajLogEl.textContent = '';
-  ajLogCount.textContent = '0 lines';
+  ajLogCount.textContent = '0 Zeilen';
 }
 
 // ─────────────────────────────────────────────
@@ -324,8 +355,8 @@ function renderActiveJob(job: JobSnapshot | null): void {
 
   activeJobSection.hidden = false;
 
-  // State badge
-  ajStateBadge.textContent = job.state;
+  // State badge (translated)
+  ajStateBadge.textContent = tState(job.state);
   ajStateBadge.className = 'state-badge is-' + job.state;
 
   // Input info
@@ -350,11 +381,11 @@ function renderActiveJob(job: JobSnapshot | null): void {
 }
 
 function renderProgress(phase: string | null, progress: number | null): void {
-  ajPhaseLabel.textContent = phase ?? '';
+  ajPhaseLabel.textContent = tPhase(phase);
   if (progress != null) {
     ajProgressTrack.classList.remove('indeterminate');
     ajProgressBar.style.width = progress + '%';
-    ajProgressPct.textContent = progress.toFixed(0) + '%';
+    ajProgressPct.textContent = progress.toFixed(0) + ' %';
   } else {
     ajProgressTrack.classList.add('indeterminate');
     ajProgressBar.style.width = '100%';
@@ -410,23 +441,40 @@ function renderJobHistory(jobs: JobSnapshot[]): void {
 function updateJobCard(li: HTMLLIElement, job: JobSnapshot): void {
   const runtime = job.startedAt && job.finishedAt
     ? fmtDuration(job.finishedAt - job.startedAt)
-    : job.startedAt ? 'running…' : '—';
+    : job.startedAt ? 'läuft …' : '—';
 
-  const outputsHtml = (job.outputs || []).map((f) =>
-    `<li class="dl-item">
+  // Files that we render in-browser as a styled HTML page get an extra
+  // "Ansicht" button in front of the regular Download link.
+  const isViewable = (name: string): boolean => {
+    const n = name.toLowerCase();
+    return n.endsWith('.md') || n.endsWith('.markdown') ||
+           n.endsWith('.json') || n.endsWith('.txt') || n.endsWith('.log');
+  };
+
+  const outputsHtml = (job.outputs || []).map((f) => {
+    const dl = `/api/download/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`;
+    const view = `/api/view/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`;
+    const viewBtn = isViewable(f.name)
+      ? `<a href="${view}" target="_blank" rel="noopener" class="dl-btn">
+           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+             <circle cx="12" cy="12" r="3"/>
+           </svg>Ansicht
+         </a>`
+      : '';
+    return `<li class="dl-item">
       <div class="dl-name">${escapeHtml(f.name)}</div>
       <div class="filesize">${fmtBytes(f.size)}</div>
-      <a href="/api/download/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}"
-         download="${escapeHtml(f.name)}"
-         class="dl-btn">
+      ${viewBtn}
+      <a href="${dl}" download="${escapeHtml(f.name)}" class="dl-btn">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
           <polyline points="7 10 12 15 17 10"/>
           <line x1="12" y1="15" x2="12" y2="3"/>
-        </svg>Download
+        </svg>Herunterladen
       </a>
-    </li>`
-  ).join('');
+    </li>`;
+  }).join('');
 
   const errorHtml = job.error
     ? `<div class="job-error muted small">${escapeHtml(job.error)}</div>`
@@ -434,7 +482,7 @@ function updateJobCard(li: HTMLLIElement, job: JobSnapshot): void {
 
   li.innerHTML = `
     <div class="job-card-summary">
-      <span class="state-badge is-${job.state}">${escapeHtml(job.state)}</span>
+      <span class="state-badge is-${job.state}">${escapeHtml(tState(job.state))}</span>
       <span class="job-card-name">${escapeHtml(job.inputName)}</span>
       <span class="job-card-size muted small">${fmtBytes(job.inputSize)}</span>
       <span class="job-card-runtime muted small">${escapeHtml(runtime)}</span>
@@ -442,7 +490,7 @@ function updateJobCard(li: HTMLLIElement, job: JobSnapshot): void {
     </div>
     <div class="job-card-detail">
       ${errorHtml}
-      ${outputsHtml ? `<ul class="downloads job-downloads">${outputsHtml}</ul>` : '<p class="muted small">No output files.</p>'}
+      ${outputsHtml ? `<ul class="downloads job-downloads">${outputsHtml}</ul>` : '<p class="muted small">Keine Ausgabedateien.</p>'}
     </div>
   `;
 }
@@ -472,7 +520,7 @@ qs<HTMLFormElement>('#form').addEventListener('submit', async (e) => {
   uploadProgressBlock.hidden = false;
   uploadBar.style.width = '0%';
   uploadPct.textContent = '0%';
-  uploadStats.textContent = 'starting…';
+  uploadStats.textContent = 'startet …';
 
   const file = selectedFile;
   const passwordsValue = passwordsEl.value;
@@ -492,7 +540,7 @@ qs<HTMLFormElement>('#form').addEventListener('submit', async (e) => {
     onProgress(bytesSent: number, bytesTotal: number) {
       const pct = bytesTotal > 0 ? (bytesSent / bytesTotal) * 100 : 0;
       uploadBar.style.width = pct + '%';
-      uploadPct.textContent = pct.toFixed(1) + '%';
+      uploadPct.textContent = pct.toFixed(1) + ' %';
 
       const now = Date.now();
       const dt = (now - lastTickAt) / 1000;
@@ -504,9 +552,9 @@ qs<HTMLFormElement>('#form').addEventListener('submit', async (e) => {
       }
       const remaining = lastSpeed > 0 ? (bytesTotal - bytesSent) / lastSpeed : null;
       uploadStats.textContent =
-        `${fmtBytes(bytesSent)} of ${fmtBytes(bytesTotal)}` +
+        `${fmtBytes(bytesSent)} von ${fmtBytes(bytesTotal)}` +
         (lastSpeed > 0 ? ` · ${fmtBytes(lastSpeed)}/s` : '') +
-        (remaining != null && isFinite(remaining) ? ` · ${fmtDuration(remaining * 1000)} left` : '');
+        (remaining != null && isFinite(remaining) ? ` · noch ${fmtDuration(remaining * 1000)}` : '');
     },
     onError(err: Error) {
       uploadInProgress = false;
@@ -514,7 +562,7 @@ qs<HTMLFormElement>('#form').addEventListener('submit', async (e) => {
       cancelUploadBtn.hidden = true;
       uploadProgressBlock.hidden = true;
       submitBtn.disabled = !selectedFile;
-      toast('Upload error: ' + err.message, 'error');
+      toast('Upload-Fehler: ' + err.message, 'error');
     },
     async onSuccess() {
       uploadInProgress = false;
@@ -530,15 +578,15 @@ qs<HTMLFormElement>('#form').addEventListener('submit', async (e) => {
           body: JSON.stringify({ passwords: passwordsValue }),
         });
         if (!res.ok) {
-          const j = await res.json().catch(() => ({ error: 'Unknown error' }));
-          toast((j as { error?: string }).error ?? `Job enqueue failed (HTTP ${res.status})`, 'error');
+          const j = await res.json().catch(() => ({ error: 'Unbekannter Fehler' }));
+          toast((j as { error?: string }).error ?? `Auftrag konnte nicht eingereiht werden (HTTP ${res.status})`, 'error');
           submitBtn.disabled = !selectedFile;
         } else {
           // SSE will update state; clear file selection for next use
           setFile(null);
         }
       } catch (fetchErr) {
-        toast('Network error enqueueing job.', 'error');
+        toast('Netzwerkfehler beim Einreihen des Auftrags.', 'error');
         submitBtn.disabled = !selectedFile;
       }
     },
@@ -568,7 +616,7 @@ cancelUploadBtn.addEventListener('click', async () => {
   cancelUploadBtn.hidden = true;
   uploadProgressBlock.hidden = true;
   submitBtn.disabled = !selectedFile;
-  toast('Upload cancelled.');
+  toast('Upload abgebrochen.');
 });
 
 // ─────────────────────────────────────────────
@@ -580,9 +628,9 @@ cancelJobBtn.addEventListener('click', async () => {
     const r = await fetch('/api/cancel', { method: 'POST' });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
-      toast((j as { error?: string }).error ?? 'Could not cancel.', 'error');
+      toast((j as { error?: string }).error ?? 'Konnte nicht abbrechen.', 'error');
     } else {
-      toast('Stopping process…');
+      toast('Prozess wird gestoppt …');
     }
   } finally {
     cancelJobBtn.disabled = false;
@@ -688,8 +736,8 @@ function connectEvents(): void {
 // ─────────────────────────────────────────────
 function applySnapshot(snap: SessionSnapshot): void {
   // Session pill
-  sessionPill.textContent = 'session ' + (snap.sessionId ? snap.sessionId.slice(0, 8) : '?');
-  sessionPill.title = 'Session ' + snap.sessionId + '\nstarted ' + fmtClock(snap.sessionStartedAt);
+  sessionPill.textContent = 'Sitzung ' + (snap.sessionId ? snap.sessionId.slice(0, 8) : '?');
+  sessionPill.title = 'Sitzung ' + snap.sessionId + '\ngestartet ' + fmtClock(snap.sessionStartedAt);
 
   // Determine the active job (running or queued)
   const currentJob = snap.currentJobId

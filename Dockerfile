@@ -99,6 +99,12 @@ ENV NODE_ENV=production \
     # Container is the outer sandbox already. Users who grant CAP_SYS_ADMIN
     # can flip this to "bwrap" for a defence-in-depth inner sandbox.
     SANDBOX_MODE=none \
+    # extract-sbom's own internal sandbox (bwrap) needs CAP_SYS_ADMIN, which
+    # we drop in the recommended runtime. Passing --unsafe tells extract-sbom
+    # to skip its inner sandbox; the container itself isolates the workload.
+    # Override at runtime with `-e EXTRACT_SBOM_ARGS="..."` if you've granted
+    # the capability and want the inner bwrap layer too.
+    EXTRACT_SBOM_ARGS=--unsafe \
     LOG_LEVEL=info \
     LOG_PRETTY=0
 
