@@ -192,40 +192,52 @@ export function createApp(config: ServerConfig): AppResult {
   );
 
   // ------------------------------------------------------------------
-  // Session helper used by route handlers and tus handler
+  // Session resolution
   //
-  // Cookies are the primary transport, but some proxy/tunnel setups
-  // strip them. We accept the session id from three places in order:
-  //   1. `sid` cookie  (default browser path)
+  // The session id can travel via three transports:
+  //   1. `sid` cookie  (browser default)
   //   2. `X-Session-Id` HTTP header  (set by tus + fetch in app.ts)
   //   3. `?sid=` query parameter  (used by SSE which can't set headers,
-  //      and by download/view links so they survive cookie loss)
+  //      and by direct download/view links)
+  //
+  // We try ALL of them and return the first that resolves to a *live*
+  // session. Earlier the cookie had absolute priority, so a stale cookie
+  // from a previous container instance shadowed the fresh sid in the
+  // header/query and the client got 440 even though it had sent the right
+  // id. Now stale candidates are simply skipped.
   // ------------------------------------------------------------------
 
-  function getSid(req: Request): string | undefined {
+  function getSidCandidates(req: Request): string[] {
+    const out: string[] = [];
     const fromCookie = req.cookies?.['sid'] as string | undefined;
-    if (fromCookie) return fromCookie;
+    if (fromCookie) out.push(fromCookie);
     const fromHeader = req.get('X-Session-Id');
-    if (fromHeader) return fromHeader;
+    if (fromHeader) out.push(fromHeader);
     const fromQuery = req.query['sid'];
-    if (typeof fromQuery === 'string' && fromQuery) return fromQuery;
+    if (typeof fromQuery === 'string' && fromQuery) out.push(fromQuery);
+    return out;
+  }
+
+  function resolveSession(req: Request) {
+    for (const sid of getSidCandidates(req)) {
+      const sess = sessions.get(sid);
+      if (sess) return sess;
+    }
     return undefined;
   }
 
   function requireSession(req: Request, res: Response) {
-    const sid = getSid(req);
-    const sess = sessions.get(sid);
+    const sess = resolveSession(req);
     if (!sess) {
-      // Log the missing-session case once so operators can diagnose cookie
-      // / header transport issues without dumping the full request log.
       logger.warn(
         {
           path: req.path,
           hasCookieHeader: !!req.headers.cookie,
           hasSidHeader: !!req.get('X-Session-Id'),
           hasSidQuery: !!req.query['sid'],
+          candidateCount: getSidCandidates(req).length,
         },
-        'session not found'
+        'session not found — all sid candidates failed to resolve'
       );
       res.status(440).json({ error: 'Session expired. Reload the page.' });
       return null;
@@ -244,10 +256,9 @@ export function createApp(config: ServerConfig): AppResult {
     scratchDir: config.scratchDir,
     maxUploadBytes: config.maxUploadBytes,
     getSession: (req: Request) => {
-      // tus mounts before cookieParser sees the request inside its own
-      // middleware chain, so consult the same three transports requireSession
-      // does — cookie, X-Session-Id header, ?sid query — to be robust.
-      return sessions.get(getSid(req));
+      // Use the same try-all-candidates resolver so a stale cookie can't
+      // shadow a fresh sid coming in via X-Session-Id or ?sid=.
+      return resolveSession(req);
     },
     onUploadFinished(sess, info) {
       // Store the pending upload info on the session so POST /api/jobs can
