@@ -3,3 +3,12 @@ npm-debug.log*
 .env
 .env.local
 .DS_Store
+dist/
+public/dist/
+public/vendor/
+coverage/
+*.tsbuildinfo
+
+# Built extract-sbom Go binary lands here; platform-specific, rebuilt by scripts/install.sh
+/bin/*
+!/bin/.gitkeep
