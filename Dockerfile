@@ -92,6 +92,11 @@ RUN apt-get update \
       p7zip-full unshield innoextract \
  && curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
       | sh -s -- -b /usr/local/bin "$SYFT_VERSION" \
+ # grype: CVE-Datenbank-Scanner. Wir nutzen ihn nach jedem extract-sbom-Lauf
+ # auf der erzeugten CycloneDX-SBOM und bauen daraus einen farbig
+ # kategorisierten HTML-Bericht.
+ && curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+      | sh -s -- -b /usr/local/bin \
  # extract-sbom prefers den kanonischen Namen 7zz; Debian installiert 7z.
  # Symlink, damit der Report „Using 7zz" sagt statt auf den Fallback geht.
  && ln -s "$(command -v 7z)" /usr/local/bin/7zz \
