@@ -63,6 +63,8 @@ you're done. Contributions back are welcome.
 
 ## Quickstart
 
+### From source
+
 ```bash
 git clone https://github.com/merlin2533/sbom.git
 cd sbom
@@ -71,6 +73,34 @@ npm start                    # listen on http://localhost:3000
 ```
 
 `install.sh` is idempotent — re-run it any time you pull updates.
+
+### From the published Docker image
+
+A multi-stage image is built and pushed to Docker Hub and GHCR on every
+commit to `main` and on every `v*.*.*` tag (see
+[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)).
+
+```bash
+# Pull and run a one-shot container:
+docker run --rm -p 3000:3000 \
+  --tmpfs /scratch:rw,nosuid,nodev,size=8g,mode=1700 \
+  --cap-drop=ALL --security-opt=no-new-privileges:true \
+  -e SCRATCH_DIR=/scratch -e SANDBOX_MODE=none \
+  merlin2539/sbom:latest
+
+# Or, ready-made compose file:
+curl -fsSL https://raw.githubusercontent.com/merlin2533/sbom/main/docker-compose.yml \
+    -o docker-compose.yml
+docker compose up -d
+# open http://localhost:3000
+```
+
+The image ships with `bubblewrap`, `syft` and the upstream Go
+`extract-sbom` binary already built in; you only need a Docker host.
+
+> Maintainers: pushing requires the repo secrets `DOCKERHUB_USERNAME` and
+> `DOCKERHUB_TOKEN` to be set. GHCR uses the workflow's built-in
+> `GITHUB_TOKEN` automatically.
 
 ## Preflight check
 
