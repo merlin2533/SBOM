@@ -8,6 +8,8 @@ declare const tus: {
     metadata?: Record<string, string>;
     chunkSize?: number;
     retryDelays?: number[];
+    withCredentials?: boolean;
+    credentials?: 'same-origin' | 'include' | 'omit';
     onProgress?: (bytesSent: number, bytesTotal: number) => void;
     onError?: (err: Error) => void;
     onSuccess?: () => void;
@@ -531,6 +533,12 @@ qs<HTMLFormElement>('#form').addEventListener('submit', async (e) => {
 
   const upload = new tus.Upload(file, {
     endpoint: '/api/tus',
+    // tus-js-client defaults to credentials="omit" so the session cookie is
+    // dropped from the upload requests. We're always same-origin, so flip
+    // both XHR-style (`withCredentials`) and fetch-style (`credentials`)
+    // explicitly on to keep `sid` flowing.
+    withCredentials: true,
+    credentials: 'same-origin',
     chunkSize: 16 * 1024 * 1024, // 16 MiB
     retryDelays: [0, 1000, 3000, 5000, 10000],
     metadata: {
@@ -574,6 +582,7 @@ qs<HTMLFormElement>('#form').addEventListener('submit', async (e) => {
       try {
         const res = await fetch('/api/jobs', {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ passwords: passwordsValue }),
         });
@@ -625,7 +634,7 @@ cancelUploadBtn.addEventListener('click', async () => {
 cancelJobBtn.addEventListener('click', async () => {
   cancelJobBtn.disabled = true;
   try {
-    const r = await fetch('/api/cancel', { method: 'POST' });
+    const r = await fetch('/api/cancel', { method: 'POST', credentials: 'same-origin' });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
       toast((j as { error?: string }).error ?? 'Konnte nicht abbrechen.', 'error');
@@ -641,7 +650,7 @@ cancelJobBtn.addEventListener('click', async () => {
 // Reset / new session button
 // ─────────────────────────────────────────────
 resetBtn.addEventListener('click', async () => {
-  await fetch('/api/reset', { method: 'POST' }).catch(() => {});
+  await fetch('/api/reset', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
   location.reload();
 });
 
@@ -652,7 +661,10 @@ let es: EventSource | null = null;
 
 function connectEvents(): void {
   if (es) { try { es.close(); } catch (_) {} }
-  es = new EventSource('/api/events');
+  // withCredentials makes EventSource send the session cookie even when the
+  // page is being served through a reverse proxy or tunnel that the browser
+  // perceives as a slightly different origin.
+  es = new EventSource('/api/events', { withCredentials: true });
 
   es.addEventListener('state', (ev: MessageEvent) => {
     const snap: SessionSnapshot = JSON.parse(ev.data);

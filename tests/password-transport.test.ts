@@ -111,11 +111,12 @@ describe('Password transport', () => {
     expect(spyContent).toContain('foo,bar');
     expect(spyContent).toContain('other');
 
-    // After job completion, the password file must be shredded/deleted
-    // (job.passwordFile is set to null after shred)
+    // After job completion, the password file must be shredded/deleted.
+    // Shredding happens asynchronously after the child exits, so give it a
+    // short grace period before asserting (the job state already flipped to
+    // 'done' on the 'exit' event, but shred can race the test on slow CI).
+    await waitFor(() => job!.passwordFile === null && !existsSync(pwfilePath), 2000);
     expect(job!.passwordFile).toBeNull();
-
-    // The actual file path from spy output should no longer exist
     expect(existsSync(pwfilePath)).toBe(false);
   }, 10000);
 
