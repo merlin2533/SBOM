@@ -11,20 +11,62 @@ const { spawn } = require('child_process');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES || String(5 * 1024 * 1024 * 1024), 10);
 const EXTRACT_SBOM_BIN = process.env.EXTRACT_SBOM_BIN || 'extract-sbom';
 const EXTRA_ARGS = (process.env.EXTRACT_SBOM_ARGS || '').split(/\s+/).filter(Boolean);
-const ROOT_TMP = path.join(os.tmpdir(), 'sbom-upload-app');
-const MAX_LOG_LINES = 2000;
+const MAX_LOG_LINES = parseInt(process.env.MAX_LOG_LINES || '2000', 10);
+const SESSION_IDLE_MS = parseInt(process.env.SESSION_IDLE_MS || String(30 * 60 * 1000), 10);
+const UPLOAD_RATE_PER_MIN = parseInt(process.env.UPLOAD_RATE_PER_MIN || '5', 10);
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+const AUTH_USER = process.env.AUTH_USER || '';
+const AUTH_PASS = process.env.AUTH_PASS || '';
 
-fs.mkdirSync(ROOT_TMP, { recursive: true });
+// Default to system tmpdir, but allow a tmpfs path (e.g. /dev/shm) so the
+// uploaded artifact + extracted contents never touch real storage.
+const ROOT_TMP = process.env.SCRATCH_DIR || path.join(os.tmpdir(), 'sbom-upload-app');
+
+// Wipe any leftovers from a previous crashed process before we start using
+// the scratch root. The 0700 mode keeps other local users out.
+try { fs.rmSync(ROOT_TMP, { recursive: true, force: true }); } catch (_) {}
+fs.mkdirSync(ROOT_TMP, { recursive: true, mode: 0o700 });
+try { fs.chmodSync(ROOT_TMP, 0o700); } catch (_) {}
 
 const sessions = new Map();
+const uploadBuckets = new Map(); // ip -> { count, resetAt }
+
+// ----------------------------------------------------------------------------
+// Helpers
+// ----------------------------------------------------------------------------
 
 async function rmrf(dir) {
   if (!dir) return;
   try { await fsp.rm(dir, { recursive: true, force: true }); }
   catch (err) { console.warn(`cleanup failed for ${dir}:`, err.message); }
+}
+
+// Overwrite a file with random bytes before unlinking. Not a real shred on
+// CoW/SSD filesystems but cheap and meaningful on tmpfs where the bytes do
+// live in RAM. Belt-and-braces; the file is 0600 already.
+async function shredUnlink(file) {
+  if (!file) return;
+  try {
+    const st = await fsp.stat(file);
+    if (st.size > 0) {
+      const fd = await fsp.open(file, 'r+');
+      try {
+        const chunk = Math.min(64 * 1024, st.size);
+        const buf = crypto.randomBytes(chunk);
+        let written = 0;
+        while (written < st.size) {
+          const n = Math.min(buf.length, st.size - written);
+          await fd.write(buf, 0, n, written);
+          written += n;
+        }
+        try { await fd.sync(); } catch (_) {}
+      } finally { await fd.close(); }
+    }
+  } catch (_) {}
+  try { await fsp.unlink(file); } catch (_) {}
 }
 
 function snapshot(sess) {
@@ -36,10 +78,13 @@ function snapshot(sess) {
     job: j && {
       pid: j.pid,
       command: j.command,
-      args: j.args,
+      // Don't leak the absolute path of internal scratch files to the client.
+      // Show only the basenames the user actually cares about.
+      args: j.argsDisplay,
       inputName: j.inputName,
       inputSize: j.inputSize,
       passwordCount: j.passwordCount,
+      passwordTransport: j.passwordTransport,
       startedAt: j.startedAt,
       finishedAt: j.finishedAt,
       exitCode: j.exitCode,
@@ -82,12 +127,14 @@ async function refreshOutputs(sess) {
     } catch (_) {}
   }
   files.sort((a, b) => a.name.localeCompare(b.name));
-  const prev = JSON.stringify(sess.job.outputs);
-  const next = JSON.stringify(files);
-  if (prev !== next) {
+  if (JSON.stringify(sess.job.outputs) !== JSON.stringify(files)) {
     sess.job.outputs = files;
     broadcast(sess, 'outputs', files);
   }
+}
+
+function touch(sess) {
+  if (sess) sess.lastActivity = Date.now();
 }
 
 async function destroySession(sid) {
@@ -104,19 +151,25 @@ async function destroySession(sid) {
   if (sess.watcher) {
     try { sess.watcher.close(); } catch (_) {}
   }
+  // Shred the password file if it's still around (job killed mid-flight).
+  if (sess.job && sess.job.passwordFile) {
+    await shredUnlink(sess.job.passwordFile);
+    sess.job.passwordFile = null;
+  }
   await rmrf(sess.dir);
 }
 
 function newSession() {
   const sid = crypto.randomBytes(16).toString('hex');
   const dir = path.join(ROOT_TMP, sid);
-  fs.mkdirSync(path.join(dir, 'upload'), { recursive: true });
-  fs.mkdirSync(path.join(dir, 'out'), { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(dir, 'upload'), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(dir, 'out'), { recursive: true, mode: 0o700 });
   const sess = {
-    sid,
-    dir,
+    sid, dir,
     job: null,
     createdAt: Date.now(),
+    lastActivity: Date.now(),
     sseClients: new Set(),
     watcher: null,
   };
@@ -124,17 +177,129 @@ function newSession() {
   return sess;
 }
 
+// ----------------------------------------------------------------------------
+// Express setup
+// ----------------------------------------------------------------------------
+
 const app = express();
+if (TRUST_PROXY) app.set('trust proxy', 1);
+app.disable('x-powered-by');
 app.use(cookieParser());
 app.use(express.json({ limit: '1mb' }));
-// index: false so GET / hits our handler and rotates the session cookie.
-app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+
+// --- security headers (apply to everything) ---------------------------------
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'interest-cohort=(), browsing-topics=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self'",
+      "img-src 'self' data:",
+      "font-src 'self'",
+      "connect-src 'self'",
+      "form-action 'self'",
+      "base-uri 'none'",
+      "frame-ancestors 'none'",
+      "object-src 'none'",
+    ].join('; ')
+  );
+  // API responses must never end up in shared caches or browser back/forward.
+  if (req.path === '/' || req.path.startsWith('/api/')) {
+    res.setHeader('Cache-Control', 'no-store, private');
+    res.setHeader('Pragma', 'no-cache');
+  }
+  next();
+});
+
+// --- optional HTTP basic auth -----------------------------------------------
+function timingEqual(a, b) {
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  const len = Math.max(ab.length, bb.length, 1);
+  const aPad = Buffer.concat([ab, Buffer.alloc(len - ab.length)]);
+  const bPad = Buffer.concat([bb, Buffer.alloc(len - bb.length)]);
+  return crypto.timingSafeEqual(aPad, bPad) && ab.length === bb.length;
+}
+
+if (AUTH_USER) {
+  app.use((req, res, next) => {
+    const h = req.get('Authorization') || '';
+    if (h.startsWith('Basic ')) {
+      let cred = '';
+      try { cred = Buffer.from(h.slice(6), 'base64').toString('utf8'); } catch (_) {}
+      const i = cred.indexOf(':');
+      const u = i >= 0 ? cred.slice(0, i) : cred;
+      const p = i >= 0 ? cred.slice(i + 1) : '';
+      if (timingEqual(u, AUTH_USER) && timingEqual(p, AUTH_PASS)) return next();
+    }
+    res.set('WWW-Authenticate', 'Basic realm="SBOM Extractor", charset="UTF-8"');
+    res.status(401).send('Authentication required.');
+  });
+}
+
+// --- CSRF guard for state-changing API endpoints -----------------------------
+// Browsers send Sec-Fetch-Site on Fetch/XHR. Reject anything that didn't
+// originate from the same origin. (SameSite=Lax already blocks the cookie
+// from cross-site POSTs, but defense in depth.)
+function sameOriginOnly(req, res, next) {
+  const sfs = req.get('Sec-Fetch-Site');
+  if (sfs && sfs !== 'same-origin' && sfs !== 'none') {
+    return res.status(403).json({ error: 'Cross-origin request rejected.' });
+  }
+  next();
+}
+
+// --- per-IP rate limit on uploads --------------------------------------------
+function rateLimitUpload(req, res, next) {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  let b = uploadBuckets.get(ip);
+  if (!b || b.resetAt < now) {
+    b = { count: 0, resetAt: now + 60_000 };
+    uploadBuckets.set(ip, b);
+  }
+  b.count++;
+  res.setHeader('X-RateLimit-Limit', String(UPLOAD_RATE_PER_MIN));
+  res.setHeader('X-RateLimit-Remaining', String(Math.max(0, UPLOAD_RATE_PER_MIN - b.count)));
+  if (b.count > UPLOAD_RATE_PER_MIN) {
+    const retry = Math.ceil((b.resetAt - now) / 1000);
+    res.setHeader('Retry-After', String(retry));
+    return res.status(429).json({ error: 'Too many uploads. Try again later.' });
+  }
+  next();
+}
+
+// --- static files (no index so GET / hits our handler) -----------------------
+app.use(express.static(path.join(__dirname, 'public'), {
+  index: false,
+  setHeaders(res, file) {
+    if (file.endsWith('.js') || file.endsWith('.css')) {
+      res.setHeader('Cache-Control', 'no-store, private');
+    }
+  },
+}));
+
+// ----------------------------------------------------------------------------
+// Routes
+// ----------------------------------------------------------------------------
 
 app.get('/', async (req, res) => {
   const prev = req.cookies.sid;
   if (prev) await destroySession(prev);
   const sess = newSession();
-  res.cookie('sid', sess.sid, { httpOnly: true, sameSite: 'lax' });
+  res.cookie('sid', sess.sid, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: !!req.secure,
+    path: '/',
+  });
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
@@ -145,6 +310,7 @@ function requireSession(req, res) {
     res.status(440).json({ error: 'Session expired. Reload the page.' });
     return null;
   }
+  touch(sess);
   return sess;
 }
 
@@ -160,48 +326,41 @@ const upload = multer({
       cb(null, safe || 'artifact.bin');
     },
   }),
-  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 4, parts: 6 },
 });
 
-app.get('/api/state', (req, res) => {
+app.get('/api/state', sameOriginOnly, (req, res) => {
   const sess = requireSession(req, res);
   if (!sess) return;
   res.json(snapshot(sess));
 });
 
-app.get('/api/log', (req, res) => {
-  const sess = requireSession(req, res);
-  if (!sess) return;
-  res.json({ log: sess.job ? sess.job.log : [] });
-});
-
-app.get('/api/events', (req, res) => {
+app.get('/api/events', sameOriginOnly, (req, res) => {
   const sess = requireSession(req, res);
   if (!sess) return;
   res.set({
     'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache, no-transform',
+    'Cache-Control': 'no-store, private',
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
   res.flushHeaders();
   sess.sseClients.add(res);
-  // Initial snapshot so a fresh subscriber doesn't need a separate /api/state call.
   res.write(`event: state\ndata: ${JSON.stringify(snapshot(sess))}\n\n`);
   if (sess.job && sess.job.log.length) {
     res.write(`event: log-replay\ndata: ${JSON.stringify(sess.job.log)}\n\n`);
   }
-  // Heartbeat to keep proxies from idling the connection out.
   const beat = setInterval(() => {
     try { res.write(': beat\n\n'); } catch (_) {}
   }, 15000);
   req.on('close', () => {
     clearInterval(beat);
     sess.sseClients.delete(res);
+    touch(sess);
   });
 });
 
-app.post('/api/upload', (req, res) => {
+app.post('/api/upload', sameOriginOnly, rateLimitUpload, (req, res) => {
   const sess = requireSession(req, res);
   if (!sess) return;
   if (sess.job && !sess.job.finished) {
@@ -217,16 +376,31 @@ app.post('/api/upload', (req, res) => {
     }
     if (!req.file) return res.status(400).json({ error: 'No artifact uploaded.' });
 
-    // Passwords come as a textarea; strip comments and blank lines, keep order.
-    const rawPasswords = (req.body.passwords || '')
+    // Strip comments + blank lines. Keep order — extract-sbom tries them in
+    // sequence and a "no password" attempt is always tried first anyway.
+    const passwords = (req.body.passwords || '')
       .split(/\r?\n/)
       .map((s) => s.replace(/\s+$/, ''))
       .filter((s) => s.length > 0 && !s.startsWith('#'));
 
+    // Prefer the EXTRACT_SBOM_PASSWORDS env var so secrets never touch disk.
+    // Env vars are still readable by same-user processes via /proc/<pid>/environ,
+    // but that's the same threat model as a 0600 file under our scratch dir.
+    // The env var format is comma-separated; fall back to a tmpfs file if any
+    // password contains a comma.
     let passwordFile = null;
-    if (rawPasswords.length > 0) {
-      passwordFile = path.join(sess.dir, 'passwords.txt');
-      await fsp.writeFile(passwordFile, rawPasswords.join('\n') + '\n', { mode: 0o600 });
+    let passwordTransport = 'none';
+    const childEnv = { ...process.env };
+    if (passwords.length > 0) {
+      const hasComma = passwords.some((p) => p.includes(','));
+      if (!hasComma) {
+        childEnv.EXTRACT_SBOM_PASSWORDS = passwords.join(',');
+        passwordTransport = 'env';
+      } else {
+        passwordFile = path.join(sess.dir, 'passwords.txt');
+        await fsp.writeFile(passwordFile, passwords.join('\n') + '\n', { mode: 0o600 });
+        passwordTransport = 'file';
+      }
     }
 
     const outDir = path.join(sess.dir, 'out');
@@ -234,10 +408,17 @@ app.post('/api/upload', (req, res) => {
     if (passwordFile) args.push('--password-file', passwordFile);
     args.push(req.file.path);
 
+    // Display-only args: replace full scratch paths with basenames so the UI
+    // doesn't show the server-side internal directory layout.
+    const argsDisplay = args.map((a) =>
+      a.startsWith(sess.dir + path.sep) ? path.basename(a) : a
+    );
+
     let child;
     try {
-      child = spawn(EXTRACT_SBOM_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(EXTRACT_SBOM_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv });
     } catch (e) {
+      await shredUnlink(passwordFile);
       return res.status(500).json({ error: `Failed to spawn ${EXTRACT_SBOM_BIN}: ${e.message}` });
     }
 
@@ -245,7 +426,7 @@ app.post('/api/upload', (req, res) => {
       child,
       pid: child.pid,
       command: EXTRACT_SBOM_BIN,
-      args,
+      args, argsDisplay,
       state: 'running',
       finished: false,
       exitCode: null,
@@ -256,7 +437,8 @@ app.post('/api/upload', (req, res) => {
       inputName: req.file.filename,
       inputSize: req.file.size,
       uploadPath: req.file.path,
-      passwordCount: rawPasswords.length,
+      passwordCount: passwords.length,
+      passwordTransport,
       passwordFile,
       outDir,
       outputs: [],
@@ -264,13 +446,9 @@ app.post('/api/upload', (req, res) => {
     };
     sess.job = job;
 
-    // Stream stdout/stderr line-by-line so the UI sees lines as soon as the
-    // subprocess flushes them, not at end-of-run.
     readline.createInterface({ input: child.stdout }).on('line', (l) => pushLog(sess, 'stdout', l));
     readline.createInterface({ input: child.stderr }).on('line', (l) => pushLog(sess, 'stderr', l));
 
-    // Watch the output directory: extract-sbom writes the SBOM/report
-    // mid-run, and we want the UI to surface them immediately.
     try {
       sess.watcher = fs.watch(outDir, { persistent: false }, () => {
         refreshOutputs(sess).catch(() => {});
@@ -294,14 +472,13 @@ app.post('/api/upload', (req, res) => {
         try { sess.watcher.close(); } catch (_) {}
         sess.watcher = null;
       }
-      // Drop the password file ASAP and the uploaded artifact too; only the
-      // generated outputs remain until the session is torn down.
-      if (job.passwordFile) {
-        try { await fsp.unlink(job.passwordFile); } catch (_) {}
-        job.passwordFile = null;
-      }
+      // Shred + unlink the password file the instant the child has exited.
+      // The uploaded artifact goes too; only the SBOM/report remain.
+      await shredUnlink(job.passwordFile);
+      job.passwordFile = null;
       try { await fsp.unlink(job.uploadPath); } catch (_) {}
       await refreshOutputs(sess);
+      touch(sess);
       broadcast(sess, 'state', snapshot(sess));
     });
 
@@ -309,14 +486,13 @@ app.post('/api/upload', (req, res) => {
   });
 });
 
-app.post('/api/cancel', (req, res) => {
+app.post('/api/cancel', sameOriginOnly, (req, res) => {
   const sess = requireSession(req, res);
   if (!sess) return;
   if (!sess.job || sess.job.finished) {
     return res.status(409).json({ error: 'No job is running.' });
   }
   try { sess.job.child.kill('SIGTERM'); } catch (_) {}
-  // If SIGTERM hasn't taken effect after a few seconds, escalate.
   const child = sess.job.child;
   setTimeout(() => {
     if (!child.killed) {
@@ -326,7 +502,7 @@ app.post('/api/cancel', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/download/:name', async (req, res) => {
+app.get('/api/download/:name', sameOriginOnly, async (req, res) => {
   const sess = requireSession(req, res);
   if (!sess) return;
   if (!sess.job || !sess.job.finished) return res.status(409).send('Not ready.');
@@ -335,25 +511,53 @@ app.get('/api/download/:name', async (req, res) => {
   if (!full.startsWith(sess.job.outDir + path.sep)) return res.status(400).send('Bad path.');
   try { await fsp.access(full, fs.constants.R_OK); }
   catch { return res.status(404).send('Not found.'); }
+  res.setHeader('Cache-Control', 'no-store, private');
   res.download(full, name);
 });
 
-app.post('/api/reset', async (req, res) => {
+app.post('/api/reset', sameOriginOnly, async (req, res) => {
   const sid = req.cookies.sid;
   if (sid) await destroySession(sid);
-  res.clearCookie('sid');
+  res.clearCookie('sid', { path: '/' });
   res.json({ ok: true });
 });
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, sessions: sessions.size, bin: EXTRACT_SBOM_BIN });
+  res.json({ ok: true, sessions: sessions.size });
 });
+
+// ----------------------------------------------------------------------------
+// Background GC: drop sessions that have no active job and no live SSE
+// subscriber after the idle window. Catches users who close the tab without
+// the sendBeacon making it through.
+// ----------------------------------------------------------------------------
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, sess] of sessions) {
+    if (sess.job && !sess.job.finished) continue;
+    if (sess.sseClients.size > 0) continue;
+    if (now - (sess.lastActivity || sess.createdAt) > SESSION_IDLE_MS) {
+      destroySession(sid).catch(() => {});
+    }
+  }
+  // Trim rate-limit buckets too.
+  for (const [ip, b] of uploadBuckets) {
+    if (b.resetAt < now) uploadBuckets.delete(ip);
+  }
+}, 60_000).unref();
+
+// ----------------------------------------------------------------------------
+// Boot + shutdown
+// ----------------------------------------------------------------------------
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`SBOM upload app listening on http://${HOST}:${PORT}`);
   console.log(`extract-sbom binary: ${EXTRACT_SBOM_BIN}`);
   console.log(`extract-sbom extra args: ${EXTRA_ARGS.join(' ') || '(none)'}`);
   console.log(`scratch dir: ${ROOT_TMP}`);
+  console.log(`auth: ${AUTH_USER ? 'basic (' + AUTH_USER + ')' : 'disabled'}`);
+  console.log(`trust proxy: ${TRUST_PROXY}`);
 });
 
 async function shutdown(sig) {

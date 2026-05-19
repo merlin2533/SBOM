@@ -324,7 +324,7 @@
     kvStarted.textContent = fmtClock(j.startedAt);
     kvInput.textContent = j.inputName + ' · ' + fmtBytes(j.inputSize);
     kvPasswords.textContent = j.passwordCount > 0
-      ? `${j.passwordCount} configured`
+      ? `${j.passwordCount} configured · via ${j.passwordTransport === 'env' ? 'env var (no disk)' : 'tmpfs file (shredded)'}`
       : 'none';
 
     jobStartedAt = j.startedAt || null;
