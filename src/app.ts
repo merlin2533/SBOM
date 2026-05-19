@@ -316,15 +316,14 @@ export function createApp(config: ServerConfig): AppResult {
     } else {
       sessions.touch(sess);
     }
+    // Permissive cookie: no SameSite, no Secure, no HttpOnly. The
+    // header-/query-based sid fallback is the actual transport now; this
+    // cookie is just a convenience for first-party requests. Dropping the
+    // attributes makes the cookie work on plain-HTTP IP deployments where
+    // SameSite=Lax + Secure combinations have caused browsers to silently
+    // drop it.
     res.cookie('sid', sess.sid, {
-      httpOnly: true,
-      // SameSite=Lax keeps the cookie out of cross-site form-POSTs (the real
-      // CSRF concern) but unlike Strict it survives reverse-proxy/tunnel
-      // setups where the browser perceives the page as a slightly different
-      // origin from the API. Every state-changing /api/* route is still gated
-      // through the Sec-Fetch-Site check, so we keep defence in depth.
-      sameSite: 'lax',
-      secure: !!req.secure,
+      httpOnly: false,
       path: '/',
     });
     res.setHeader('Content-Type', 'text/html; charset=utf-8');

@@ -9,16 +9,15 @@ describe('Security headers', () => {
     await app.drain();
   });
 
-  it('GET / returns CSP header containing default-src \'self\'', async () => {
+  // Permissive mode: CSP / X-Frame-Options / Referrer-Policy were removed
+  // because they actively interfered with cookies on plain-HTTP IP
+  // deployments. We only keep X-Content-Type-Options.
+  it('GET / does NOT set the old strict CSP / X-Frame-Options / Referrer-Policy', async () => {
     app = makeApp();
     const res = await request(app.app).get('/');
-    expect(res.headers['content-security-policy']).toContain("default-src 'self'");
-  });
-
-  it('GET / returns X-Frame-Options: DENY', async () => {
-    app = makeApp();
-    const res = await request(app.app).get('/');
-    expect(res.headers['x-frame-options']).toBe('DENY');
+    expect(res.headers['content-security-policy']).toBeUndefined();
+    expect(res.headers['x-frame-options']).toBeUndefined();
+    expect(res.headers['referrer-policy']).toBeUndefined();
   });
 
   it('GET / returns X-Content-Type-Options: nosniff', async () => {
@@ -27,10 +26,11 @@ describe('Security headers', () => {
     expect(res.headers['x-content-type-options']).toBe('nosniff');
   });
 
-  it('GET / returns Referrer-Policy: no-referrer', async () => {
+  it('GET / advertises permissive CORS with credentials', async () => {
     app = makeApp();
-    const res = await request(app.app).get('/');
-    expect(res.headers['referrer-policy']).toBe('no-referrer');
+    const res = await request(app.app).get('/').set('Origin', 'http://example.test');
+    expect(res.headers['access-control-allow-origin']).toBe('http://example.test');
+    expect(res.headers['access-control-allow-credentials']).toBe('true');
   });
 
   it('GET / returns Cache-Control: no-store, private', async () => {
@@ -53,7 +53,10 @@ describe('Session cookie', () => {
     await app.drain();
   });
 
-  it('GET / sets HttpOnly cookie named sid', async () => {
+  // Permissive mode: cookie is now JS-readable (no HttpOnly) and has no
+  // SameSite attribute, so plain-HTTP IP deployments don't drop it. The
+  // sid is also delivered in a <meta> tag and accepted via header / query.
+  it('GET / sets a sid cookie on path=/', async () => {
     app = makeApp();
     const res = await request(app.app).get('/');
     const setCookie = res.headers['set-cookie'] as string[] | string | undefined;
@@ -61,26 +64,28 @@ describe('Session cookie', () => {
     const cookies = Array.isArray(setCookie) ? setCookie : [setCookie as string];
     const sidCookie = cookies.find((c) => c.startsWith('sid='));
     expect(sidCookie).toBeDefined();
-    expect(sidCookie!.toLowerCase()).toContain('httponly');
-    expect(sidCookie!.toLowerCase()).toContain('samesite=lax');
     expect(sidCookie!.toLowerCase()).toContain('path=/');
   });
 });
 
-describe('CSRF guard (sameOriginOnly)', () => {
+describe('CSRF guard (sameOriginOnly) — disabled in permissive mode', () => {
   let app: ReturnType<typeof makeApp>;
 
   afterEach(async () => {
     await app.drain();
   });
 
-  it('POST /api/cancel with Sec-Fetch-Site: cross-site → 403', async () => {
+  it('POST /api/cancel with Sec-Fetch-Site: cross-site is no longer rejected', async () => {
+    // Used to return 403; the check was removed to keep the app working
+    // through extensions/proxies that strip Sec-Fetch-Site. Without a
+    // session the request now returns 440 instead.
     app = makeApp();
     const res = await request(app.app)
       .post('/api/cancel')
       .set('Sec-Fetch-Site', 'cross-site')
       .set('Content-Type', 'application/json');
-    expect(res.status).toBe(403);
+    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(440);
   });
 
   it('POST /api/cancel with Sec-Fetch-Site: same-origin does NOT return 403', async () => {
