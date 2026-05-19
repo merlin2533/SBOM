@@ -10,6 +10,7 @@ import { SessionManager } from './session';
 import { wrapCommand } from './sandbox';
 import { shredUnlink } from './shred';
 import { preExtract, cleanupPreExtract, PreExtractResult } from './pre-extract';
+import { runVulnReport } from './vuln-report';
 
 export interface EnqueueOpts {
   uploadPath: string;
@@ -229,6 +230,50 @@ export class JobRunner {
       } catch (_) {}
       // Pre-Extract-Müll wegräumen (ZIP + stage-Dir).
       if (pre) await cleanupPreExtract(pre);
+
+      // Schwachstellen-Scan: wenn extract-sbom eine CycloneDX-SBOM erzeugt
+      // hat, grype gegen sie laufen lassen und einen farbig kategorisierten
+      // HTML-Bericht plus die rohe JSON-Datei ins Output-Verzeichnis legen.
+      if (job.state === 'done') {
+        try {
+          const entries = await fsp.readdir(job.outDir);
+          const cdx = entries.find((n) => /\.cdx\.json$/i.test(n));
+          if (cdx) {
+            this.sessions.pushLog(sess, job, 'stdout', `[vuln-report] running grype on ${cdx}`);
+            const vr = await runVulnReport({
+              cdxJsonPath: path.join(job.outDir, cdx),
+              outDir: job.outDir,
+              inputName: job.inputName,
+              logger: this.logger,
+              jobId: job.id,
+            });
+            if (vr.ranGrype) {
+              const summary =
+                vr.total === 0
+                  ? 'keine bekannten Schwachstellen'
+                  : Object.entries(vr.counts)
+                      .filter(([, n]) => n > 0)
+                      .map(([s, n]) => `${s}=${n}`)
+                      .join(' ');
+              this.sessions.pushLog(
+                sess,
+                job,
+                'stdout',
+                `[vuln-report] ${vr.total} Treffer (${summary})`
+              );
+            } else {
+              this.sessions.pushLog(
+                sess,
+                job,
+                'stdout',
+                `[vuln-report] übersprungen (grype nicht verfügbar oder fehlgeschlagen)`
+              );
+            }
+          }
+        } catch (e) {
+          this.logger.warn({ jobId: job.id, err: e }, 'vuln-report failed');
+        }
+      }
 
       await this.sessions.refreshOutputs(sess, job);
       this.sessions.touch(sess);
