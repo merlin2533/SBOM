@@ -12,6 +12,7 @@ import { shredUnlink } from './shred';
 import { preExtract, cleanupPreExtract, PreExtractResult } from './pre-extract';
 import { runVulnReport } from './vuln-report';
 import { buildSummaryReport } from './summary-report';
+import { writeVexSkeleton } from './vex-template';
 
 export interface EnqueueOpts {
   uploadPath: string;
@@ -240,9 +241,12 @@ export class JobRunner {
           const entries = await fsp.readdir(job.outDir);
           const cdx = entries.find((n) => /\.cdx\.json$/i.test(n));
           if (cdx) {
+            const cdxPath = path.join(job.outDir, cdx);
+
+            // 1. Schwachstellen-Scan → JSON + HTML + CSV
             this.sessions.pushLog(sess, job, 'stdout', `[vuln-report] running grype on ${cdx}`);
             const vr = await runVulnReport({
-              cdxJsonPath: path.join(job.outDir, cdx),
+              cdxJsonPath: cdxPath,
               outDir: job.outDir,
               inputName: job.inputName,
               logger: this.logger,
@@ -262,6 +266,14 @@ export class JobRunner {
                 'stdout',
                 `[vuln-report] ${vr.total} Treffer (${summary})`
               );
+              if (vr.csvPath) {
+                this.sessions.pushLog(
+                  sess,
+                  job,
+                  'stdout',
+                  `[csv] vulnerabilities.csv geschrieben (${vr.total} Zeilen)`
+                );
+              }
             } else {
               this.sessions.pushLog(
                 sess,
@@ -271,11 +283,11 @@ export class JobRunner {
               );
             }
 
-            // Kombinierter Gesamtübersicht-Bericht (Komponenten + CVEs +
-            // Restrisiken in einem HTML).
+            // 2. Kombinierter Gesamtübersicht-Bericht (Komponenten + CVEs +
+            //    Lizenzen + Restrisiken in einem HTML).
             const reportMd = entries.find((n) => /\.report\.md$/i.test(n));
             const summaryRes = await buildSummaryReport({
-              cdxJsonPath: path.join(job.outDir, cdx),
+              cdxJsonPath: cdxPath,
               grypeJsonPath: vr.ranGrype ? vr.jsonPath : null,
               reportMdPath: reportMd ? path.join(job.outDir, reportMd) : null,
               outDir: job.outDir,
@@ -290,6 +302,46 @@ export class JobRunner {
                 'stdout',
                 `[summary] Gesamtübersicht: ${summaryRes.componentCount} Komponenten, ${summaryRes.vulnTotal} CVEs → ${path.basename(summaryRes.htmlPath)}`
               );
+            }
+
+            // 3. SPDX-Export via syft convert
+            try {
+              const base = path.basename(cdx).replace(/\.cdx\.json$/i, '');
+              const spdxPath = path.join(job.outDir, `${base}.spdx.json`);
+              const sr = await runSyftConvert(cdxPath, spdxPath, 60_000);
+              if (sr.code === 0) {
+                this.sessions.pushLog(sess, job, 'stdout', `[spdx] spdx.json geschrieben`);
+              } else {
+                this.logger.warn(
+                  { jobId: job.id, code: sr.code, stderr: sr.stderr.slice(0, 400) },
+                  'spdx: syft convert failed (non-fatal)'
+                );
+              }
+            } catch (e) {
+              this.logger.warn({ jobId: job.id, err: e }, 'spdx: syft not available (non-fatal)');
+            }
+
+            // 4. VEX-Skelett aus grype-JSON
+            if (vr.ranGrype && vr.jsonPath) {
+              try {
+                const vexRes = await writeVexSkeleton({
+                  grypeJsonPath: vr.jsonPath,
+                  outDir: job.outDir,
+                  inputName: job.inputName,
+                  logger: this.logger,
+                  jobId: job.id,
+                });
+                if (vexRes.vexPath) {
+                  this.sessions.pushLog(
+                    sess,
+                    job,
+                    'stdout',
+                    `[vex] vex.json Skelett mit ${vexRes.count} Einträgen`
+                  );
+                }
+              } catch (e) {
+                this.logger.warn({ jobId: job.id, err: e }, 'vex: generation failed (non-fatal)');
+              }
             }
           }
         } catch (e) {
@@ -363,6 +415,37 @@ export class JobRunner {
     if (t.unref) t.unref();
   }
 }
+
+// ── SPDX export via syft convert ─────────────────────────────────────────────
+
+function runSyftConvert(
+  cdxPath: string,
+  spdxOutPath: string,
+  timeoutMs: number
+): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      'syft',
+      ['convert', cdxPath, '-o', `spdx-json=${spdxOutPath}`],
+      { stdio: ['ignore', 'ignore', 'pipe'] }
+    );
+    let stderr = '';
+    child.stderr?.on('data', (b: Buffer) => { stderr += b.toString('utf8'); });
+    const t = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch (_) {}
+    }, timeoutMs);
+    child.on('exit', (code) => {
+      clearTimeout(t);
+      resolve({ code: code ?? -1, stderr });
+    });
+    child.on('error', (e: Error) => {
+      clearTimeout(t);
+      resolve({ code: -1, stderr: e.message });
+    });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Internal helper type: jobs carry their plaintext password array only until
 // the job is launched, at which point the field is deleted.

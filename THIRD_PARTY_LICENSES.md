@@ -90,3 +90,39 @@ copies, see each package's `LICENSE` file under `node_modules/`:
 * `express` — MIT
 * `cookie-parser` — MIT
 * `pino`, `pino-http` — MIT
+* `marked` — MIT (Markdown-to-HTML für die Bericht-Ansicht)
+
+---
+
+## Container-Image: enthaltene Toolchain
+
+Diese Tools werden zur Image-Build-Zeit über `apt-get` oder das jeweilige
+Installer-Skript installiert. Sie laufen zur Laufzeit als externe
+Subprozesse (extract-sbom ruft 7z / unshield / syft auf; grype scannt
+die SBOM; innoextract entpackt Inno-Setup-Installer in unserer
+Pre-Extract-Schicht).
+
+| Komponente | Lizenz | Upstream |
+|---|---|---|
+| `syft` (anchore/syft) | Apache-2.0 | https://github.com/anchore/syft |
+| `grype` (anchore/grype) | Apache-2.0 | https://github.com/anchore/grype |
+| `p7zip-full` | LGPL-2.1+ | https://sourceforge.net/projects/p7zip/ |
+| `unshield` | MIT | https://github.com/twogood/unshield |
+| `innoextract` | Zlib | https://constexpr.org/innoextract/ |
+| `tini` | MIT | https://github.com/krallin/tini |
+| `ca-certificates` (Debian) | MPL-2.0 | https://salsa.debian.org/debian/ca-certificates |
+| `curl` | MIT-style (curl) | https://curl.se/docs/copyright.html |
+
+Für die kanonischen Lizenztexte siehe die jeweiligen
+`/usr/share/doc/<package>/copyright`-Dateien im Container.
+
+---
+
+## Formate / Standards
+
+| Format | Lizenz Spezifikation | Hinweis |
+|---|---|---|
+| CycloneDX 1.6 SBOM | Apache-2.0 | von extract-sbom erzeugt (`.cdx.json`) |
+| CycloneDX VEX 1.6 | Apache-2.0 | von dieser App als Skelett erzeugt (`.vex.json`) zum Befüllen |
+| SPDX 2.3 | CC0-1.0 (Spec) | via `syft convert` aus der CycloneDX-SBOM (`.spdx.json`) |
+| OWASP Severity-Ratings | n/a | Severity-Strings aus grype (CVSS v3.1 von NVD/GHSA) |

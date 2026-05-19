@@ -106,9 +106,12 @@ RUN apt-get update \
 COPY --from=go-build /out/extract-sbom /usr/local/bin/extract-sbom
 
 # Non-root runtime user. Scratch lives outside /app so it can be a tmpfs.
+# /var/cache/grype ist ein persistentes Cache-Volume — überlebt
+# Container-Restarts, sodass grype's ~80 MB Vuln-DB nicht jedesmal neu
+# heruntergeladen wird.
 RUN useradd -r -u 10001 -m -s /sbin/nologin sbom \
- && mkdir -p /scratch /app \
- && chown -R sbom:sbom /scratch /app
+ && mkdir -p /scratch /app /var/cache/grype \
+ && chown -R sbom:sbom /scratch /app /var/cache/grype
 
 WORKDIR /app
 COPY --from=node-build --chown=sbom:sbom /app/node_modules ./node_modules
@@ -132,6 +135,10 @@ ENV APP_VERSION=$APP_VERSION \
     # Override at runtime with `-e EXTRACT_SBOM_ARGS="..."` if you've granted
     # the capability and want the inner bwrap layer too.
     EXTRACT_SBOM_ARGS=--unsafe \
+    # grype: persistente Cache-Lokation für die Vulnerability-DB, sodass
+    # sie Container-Restarts überlebt (sonst ~80 MB Download bei jedem
+    # Cold Start). docker-compose.yml mountet hier ein named volume.
+    GRYPE_DB_CACHE_DIR=/var/cache/grype \
     LOG_LEVEL=info \
     LOG_PRETTY=0
 

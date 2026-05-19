@@ -41,6 +41,52 @@ for the full license texts that this distribution must preserve.
     * express                               MIT
     * cookie-parser                         MIT
     * pino, pino-http                       MIT
+    * marked                                MIT
+                                            (Markdown → HTML für die
+                                            Bericht-Ansicht)
+
+  Im Container-Image enthaltene externe Tools (installiert vom
+  Dockerfile, NICHT in npm-deps):
+
+    * syft (anchore/syft)                   Apache-2.0
+                                            Component-Cataloger, von
+                                            extract-sbom intern aufgerufen
+                                            https://github.com/anchore/syft
+
+    * grype (anchore/grype)                 Apache-2.0
+                                            Vulnerability-Scanner für die
+                                            CVE-Anreicherung
+                                            https://github.com/anchore/grype
+
+    * p7zip-full                            LGPL-2.1+
+                                            7-Zip-Kommandozeile
+                                            (deckt ZIP/7z/RAR/MSI/CAB ab)
+
+    * unshield                              MIT
+                                            InstallShield-CAB-Extraktor
+                                            https://github.com/twogood/unshield
+
+    * innoextract                           Zlib
+                                            Inno-Setup-Installer-Extraktor
+                                            https://constexpr.org/innoextract/
+
+    * tini                                  MIT
+                                            PID-1-Signal-Handler im Container
+
+  Standards, an deren Format wir uns halten:
+
+    * CycloneDX SBOM 1.6                    Apache-2.0
+                                            (Output von extract-sbom)
+                                            https://cyclonedx.org/
+
+    * CycloneDX VEX 1.6                     Apache-2.0
+                                            (von dieser App generiertes
+                                            Skelett zur manuellen Befüllung)
+
+    * SPDX 2.3                              CC0-1.0 (Spezifikation)
+                                            (per `syft convert` aus der
+                                            CycloneDX-SBOM erzeugt)
+                                            https://spdx.dev/
 
 Trademarks
 ----------
