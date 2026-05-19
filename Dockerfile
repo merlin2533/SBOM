@@ -77,16 +77,15 @@ LABEL org.opencontainers.image.title="sbom-upload-app" \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       bubblewrap ca-certificates curl tini \
-      # Extraktor-Toolchain für extract-sbom — sonst klagt der Report
-      # „7zz not found", „unshield not found", „unzip not found" usw.
-      # p7zip-rar gibt's in Debian wegen Lizenz nicht mehr; RAR-Support
-      # liefert unrar-free.
-      p7zip-full unzip unrar-free unshield cabextract \
-      tar xz-utils bzip2 zstd \
+      # extract-sbom benutzt laut Source-Code (internal/extract/extract_external.go)
+      # nur 7zz/7za/7z (alle Archive: ZIP, 7z, RAR, MSI, CAB) und unshield
+      # (InstallShield-Cabinets). p7zip-full liefert 7z; den Rest brauchen
+      # wir nicht.
+      p7zip-full unshield \
  && curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
       | sh -s -- -b /usr/local/bin "$SYFT_VERSION" \
- # extract-sbom sucht 7zz (neuer Binary-Name), nicht 7z (alter Name).
- # p7zip-full installiert 7z; wir verlinken 7zz darauf.
+ # extract-sbom prefers den kanonischen Namen 7zz; Debian installiert 7z.
+ # Symlink, damit der Report „Using 7zz" sagt statt auf den Fallback geht.
  && ln -s "$(command -v 7z)" /usr/local/bin/7zz \
  && rm -rf /var/lib/apt/lists/*
 
