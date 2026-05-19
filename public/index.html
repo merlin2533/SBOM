@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>SBOM Extractor</title>
+<title>SBOM-Extraktor</title>
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -20,23 +20,23 @@
         </svg>
       </span>
       <div>
-        <div class="title">SBOM Extractor</div>
-        <div class="subtitle">Ephemeral inspection for software deliveries</div>
+        <div class="title">SBOM-Extraktor</div>
+        <div class="subtitle">Flüchtige Prüfung für Software-Lieferungen</div>
       </div>
     </div>
     <div class="topbar-meta">
-      <span class="pill" id="sessionPill" title="Session ID">session …</span>
-      <button id="resetBtn" class="ghost" type="button">New session</button>
+      <span class="pill" id="sessionPill" title="Sitzungs-ID">Sitzung …</span>
+      <button id="resetBtn" class="ghost" type="button">Neue Sitzung</button>
     </div>
   </div>
 </header>
 
 <main>
-  <!-- Upload card -->
+  <!-- Upload-Karte -->
   <section class="card" id="uploadCard">
     <div class="card-head">
-      <h2>Artifact</h2>
-      <span class="muted small">Up to 5 GB · resumable · ZIP · TAR · 7z · MSI · CAB · RAR · container images</span>
+      <h2>Artefakt</h2>
+      <span class="muted small">Bis 5 GB · fortsetzbar · ZIP · TAR · 7z · MSI · CAB · RAR · Container-Images</span>
     </div>
 
     <form id="form" autocomplete="off">
@@ -48,8 +48,8 @@
             <polyline points="17 8 12 3 7 8"/>
             <line x1="12" y1="3" x2="12" y2="15"/>
           </svg>
-          <div><strong>Drop a file here</strong> or <a href="#" id="pickLink">browse</a></div>
-          <div class="muted small">Resumable upload via tus — survives connection drops, streams straight to scratch.</div>
+          <div><strong>Datei hier ablegen</strong> oder <a href="#" id="pickLink">auswählen</a></div>
+          <div class="muted small">Fortsetzbarer Upload via tus — übersteht Verbindungsabbrüche, streamt direkt ins Scratch-Verzeichnis.</div>
         </div>
         <div class="dz-filled" hidden>
           <div class="file-icon" aria-hidden="true">
@@ -62,7 +62,7 @@
             <div class="file-name" id="fileName"></div>
             <div class="muted small" id="fileSize"></div>
           </div>
-          <button type="button" class="icon-btn" id="clearFile" title="Remove file" aria-label="Remove file">
+          <button type="button" class="icon-btn" id="clearFile" title="Datei entfernen" aria-label="Datei entfernen">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
@@ -72,18 +72,18 @@
 
       <details class="passwords">
         <summary>
-          <span>Archive passwords <span class="muted small">(optional)</span></span>
-          <span class="muted small" id="pwCount">0 entries</span>
+          <span>Archiv-Passwörter <span class="muted small">(optional)</span></span>
+          <span class="muted small" id="pwCount">0 Einträge</span>
         </summary>
-        <p class="muted small">One per line. Lines starting with <code>#</code> are ignored. Tried in order; an empty/no-password attempt is always tried first.</p>
-        <textarea id="passwords" name="passwords" rows="5" spellcheck="false" placeholder="# one password per line&#10;hunter2&#10;correct horse battery staple"></textarea>
+        <p class="muted small">Eines pro Zeile. Zeilen, die mit <code>#</code> beginnen, werden ignoriert. Werden der Reihe nach probiert; ein Versuch ohne Passwort findet immer zuerst statt.</p>
+        <textarea id="passwords" name="passwords" rows="5" spellcheck="false" placeholder="# ein Passwort pro Zeile&#10;hunter2&#10;correct horse battery staple"></textarea>
       </details>
 
-      <!-- Upload progress (shown while tus upload is in flight) -->
+      <!-- Upload-Fortschritt (während tus-Upload läuft) -->
       <div class="progress-block" id="uploadProgressBlock" hidden>
         <div class="progress-row">
           <div class="progress-track"><div class="progress-bar" id="uploadBar"></div></div>
-          <span class="progress-pct" id="uploadPct">0%</span>
+          <span class="progress-pct" id="uploadPct">0 %</span>
         </div>
         <div class="muted small" id="uploadStats">—</div>
       </div>
@@ -93,23 +93,23 @@
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="5 3 19 12 5 21 5 3"/>
           </svg>
-          <span>Analyze</span>
+          <span>Analysieren</span>
         </button>
-        <button id="cancelUploadBtn" type="button" class="ghost" hidden>Cancel upload</button>
+        <button id="cancelUploadBtn" type="button" class="ghost" hidden>Upload abbrechen</button>
       </div>
     </form>
   </section>
 
-  <!-- Active job panel — shown only when a job is queued or running -->
+  <!-- Aktiver-Auftrag-Panel — sichtbar nur wenn ein Auftrag in Warteschlange oder läuft -->
   <section class="card" id="activeJob" hidden>
     <div class="card-head">
-      <h2>Active job</h2>
+      <h2>Aktiver Auftrag</h2>
       <span class="state-badge" id="ajStateBadge">—</span>
     </div>
 
     <div class="kv-grid">
       <div>
-        <div class="kv-label">Input</div>
+        <div class="kv-label">Eingabe</div>
         <div class="kv-value mono">
           <span id="ajInputName">—</span>
           <span class="muted"> · </span>
@@ -117,7 +117,7 @@
         </div>
       </div>
       <div>
-        <div class="kv-label">Command</div>
+        <div class="kv-label">Kommando</div>
         <div class="kv-value mono" id="ajCommand">—</div>
       </div>
       <div>
@@ -125,12 +125,12 @@
         <div class="kv-value mono" id="ajPid">—</div>
       </div>
       <div>
-        <div class="kv-label">Elapsed</div>
+        <div class="kv-label">Laufzeit</div>
         <div class="kv-value mono" id="ajElapsed">—</div>
       </div>
     </div>
 
-    <!-- Phase + progress bar -->
+    <!-- Phase + Fortschrittsbalken -->
     <div class="phase-row">
       <span class="phase-label" id="ajPhaseLabel"></span>
       <div class="progress-row">
@@ -141,40 +141,41 @@
       </div>
     </div>
 
-    <!-- Live log -->
+    <!-- Live-Log -->
     <details open class="log-wrap">
       <summary>
-        <span>Live log</span>
-        <span class="muted small" id="ajLogCount">0 lines</span>
+        <span>Live-Log</span>
+        <span class="muted small" id="ajLogCount">0 Zeilen</span>
       </summary>
       <pre id="ajLog" class="log"></pre>
     </details>
 
     <div class="actions">
-      <button id="cancelJobBtn" type="button" class="danger">Stop process</button>
+      <button id="cancelJobBtn" type="button" class="danger">Prozess stoppen</button>
     </div>
   </section>
 
-  <!-- Job history -->
+  <!-- Auftragshistorie -->
   <section class="card" id="historyCard">
     <div class="card-head">
-      <h2>Job history</h2>
-      <span class="muted small">Click a row to expand · downloads stay until session ends</span>
+      <h2>Auftragshistorie</h2>
+      <span class="muted small">Eintrag anklicken zum Aufklappen · Downloads bleiben bis Sitzungsende</span>
     </div>
     <ol id="jobHistory" class="job-history-list"></ol>
-    <p class="muted small history-empty" id="historyEmpty">No completed jobs yet.</p>
+    <p class="muted small history-empty" id="historyEmpty">Noch keine abgeschlossenen Aufträge.</p>
   </section>
 
   <footer>
-    Files exist only inside this session's scratch directory. Reloading the page,
-    clicking <em>New session</em> or closing the tab wipes them. Passwords are
-    written to a 0600 file and removed the moment extract-sbom exits.
+    Dateien existieren nur im Scratch-Verzeichnis dieser Sitzung. Seite neu laden,
+    <em>Neue Sitzung</em> anklicken oder Tab schließen löscht sie. Passwörter werden
+    in eine 0600-Datei geschrieben und in dem Moment entfernt, in dem extract-sbom
+    beendet wird.
   </footer>
 </main>
 
-<!-- tus resumable upload client (UMD, exposes global `tus`) -->
+<!-- tus-Client für fortsetzbare Uploads (UMD, global `tus`) -->
 <script src="/vendor/tus.min.js" defer></script>
-<!-- App module — depends on tus being loaded first; both are deferred so order is preserved -->
+<!-- App-Modul — benötigt tus; beide deferred, Reihenfolge bleibt erhalten -->
 <script type="module" src="/dist/app.js"></script>
 </body>
 </html>

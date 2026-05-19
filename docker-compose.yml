@@ -40,8 +40,10 @@ services:
       # Container itself is the outer sandbox; flip to "bwrap" *and* uncomment
       # the `cap_add: SYS_ADMIN` block below if you want the inner sandbox too.
       SANDBOX_MODE: "none"
-      # Append extra flags, e.g. "--unsafe" or "--grype":
-      # EXTRACT_SBOM_ARGS: ""
+      # extract-sbom's inner sandbox needs CAP_SYS_ADMIN. The image defaults to
+      # --unsafe so the container's own isolation does the work. Override here
+      # if you've granted SYS_ADMIN and want the inner bwrap layer too.
+      EXTRACT_SBOM_ARGS: "--unsafe"
 
       # ──────── limits ────────
       MAX_UPLOAD_BYTES: "5368709120"    # 5 GiB
