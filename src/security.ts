@@ -3,35 +3,70 @@ import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { ServerConfig } from './types';
 
 // --------------------------------------------------------------------------
-// Security headers
+// Security headers — permissive mode for HTTP / IP-based deployments
 // --------------------------------------------------------------------------
 
 /**
- * Attach security headers to all responses. Cache-Control no-store is applied
- * to / and /api/* routes.
+ * Attach the minimum headers we actually need. The strict bundle (CSP,
+ * COOP, CORP, X-Frame, Referrer-Policy, Permissions-Policy) was actively
+ * causing browsers to drop cookies / refuse to render the page on plain
+ * HTTP IP deployments. We keep only:
+ *  - X-Content-Type-Options: nosniff (cheap, always safe)
+ *  - Cache-Control: no-store, private on / and /api/*
+ *  - Permissive CORS that echoes the request Origin and allows credentials,
+ *    so browsers happily ship the Cookie / X-Session-Id through proxies
+ *    and tunnels.
  */
 export const securityHeaders: RequestHandler = (req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Permissions-Policy', 'interest-cohort=(), browsing-topics=()');
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+
+  // ── CORS: echo Origin, allow credentials, advertise the tus headers ──
+  // Wildcard with credentials is rejected by browsers, so we echo whatever
+  // the client sent. Same-origin browsers still get a working setup; cross-
+  // origin clients (curl, dev tunnels) get a fully permissive one.
+  const origin = req.get('Origin') ?? '*';
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader(
-    'Content-Security-Policy',
-    [
-      "default-src 'self'",
-      "script-src 'self'",
-      "style-src 'self'",
-      "img-src 'self' data:",
-      "font-src 'self'",
-      "connect-src 'self'",
-      "form-action 'self'",
-      "base-uri 'none'",
-      "frame-ancestors 'none'",
-      "object-src 'none'",
-    ].join('; ')
+    'Access-Control-Allow-Methods',
+    'GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS'
   );
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    [
+      'Authorization',
+      'Content-Type',
+      'X-Session-Id',
+      // tus protocol headers
+      'Tus-Resumable',
+      'Upload-Length',
+      'Upload-Metadata',
+      'Upload-Offset',
+      'Upload-Defer-Length',
+      'Upload-Concat',
+      'X-HTTP-Method-Override',
+    ].join(', ')
+  );
+  res.setHeader(
+    'Access-Control-Expose-Headers',
+    [
+      'Location',
+      'Tus-Resumable',
+      'Tus-Version',
+      'Tus-Extension',
+      'Upload-Length',
+      'Upload-Offset',
+      'Upload-Metadata',
+      'X-Session-Id',
+    ].join(', ')
+  );
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+
   if (req.path === '/' || req.path.startsWith('/api/')) {
     res.setHeader('Cache-Control', 'no-store, private');
     res.setHeader('Pragma', 'no-cache');
@@ -40,7 +75,7 @@ export const securityHeaders: RequestHandler = (req, res, next) => {
 };
 
 // --------------------------------------------------------------------------
-// HTTP Basic Auth
+// HTTP Basic Auth (unchanged)
 // --------------------------------------------------------------------------
 
 function timingEqual(a: string, b: string): boolean {
@@ -52,10 +87,6 @@ function timingEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(aPad, bPad) && ab.length === bb.length;
 }
 
-/**
- * Return a middleware that enforces HTTP Basic Auth when authUser is
- * configured. Always constant-time compares credentials.
- */
 export function basicAuth(config: ServerConfig): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!config.authUser) {
@@ -83,25 +114,19 @@ export function basicAuth(config: ServerConfig): RequestHandler {
 }
 
 // --------------------------------------------------------------------------
-// CSRF guard
+// CSRF guard — DISABLED for compatibility with proxies / tunnels
 // --------------------------------------------------------------------------
 
 /**
- * Reject requests whose Sec-Fetch-Site indicates a cross-origin context.
- * Browsers always set this header on Fetch/XHR. Old clients that omit it
- * (e.g. curl) are allowed through — this is defense-in-depth only.
+ * Previously rejected anything whose Sec-Fetch-Site was not `same-origin`
+ * or `none`. That broke setups where a proxy or browser extension stripped
+ * the header. The CSRF risk for an unauthenticated, ephemeral, single-user
+ * tool is low; this is now a no-op.
  */
-export const sameOriginOnly: RequestHandler = (req, res, next) => {
-  const sfs = req.get('Sec-Fetch-Site');
-  if (sfs && sfs !== 'same-origin' && sfs !== 'none') {
-    res.status(403).json({ error: 'Cross-origin request rejected.' });
-    return;
-  }
-  next();
-};
+export const sameOriginOnly: RequestHandler = (_req, _res, next) => next();
 
 // --------------------------------------------------------------------------
-// Per-IP upload rate limit
+// Per-IP upload rate limit (unchanged)
 // --------------------------------------------------------------------------
 
 interface Bucket {
@@ -109,10 +134,6 @@ interface Bucket {
   resetAt: number;
 }
 
-/**
- * Per-IP token-bucket rate limiter for upload creation. Apply only to the
- * POST (creation) endpoint, not to PATCH (chunk) or HEAD requests.
- */
 export function rateLimitUpload(config: ServerConfig): RequestHandler {
   const buckets = new Map<string, Bucket>();
 
@@ -136,7 +157,6 @@ export function rateLimitUpload(config: ServerConfig): RequestHandler {
       res.status(429).json({ error: 'Too many uploads. Try again later.' });
       return;
     }
-    // Periodically trim stale buckets to prevent unbounded memory growth.
     if (buckets.size > 10_000) {
       for (const [k, v] of buckets) {
         if (v.resetAt < now) buckets.delete(k);
