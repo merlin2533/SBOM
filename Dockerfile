@@ -79,7 +79,9 @@ RUN apt-get update \
       bubblewrap ca-certificates curl tini \
       # Extraktor-Toolchain für extract-sbom — sonst klagt der Report
       # „7zz not found", „unshield not found", „unzip not found" usw.
-      p7zip-full p7zip-rar unzip unrar-free unshield cabextract \
+      # p7zip-rar gibt's in Debian wegen Lizenz nicht mehr; RAR-Support
+      # liefert unrar-free.
+      p7zip-full unzip unrar-free unshield cabextract \
       tar xz-utils bzip2 zstd \
  && curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
       | sh -s -- -b /usr/local/bin "$SYFT_VERSION" \
