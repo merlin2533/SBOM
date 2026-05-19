@@ -1,0 +1,96 @@
+# ──────────────────────────────────────────────────────────────────────────
+# SBOM Upload App — consumer docker-compose.yml
+#
+# Quickstart (no clone needed):
+#
+#   curl -fsSL https://raw.githubusercontent.com/merlin2533/sbom/main/docker-compose.yml \
+#       -o docker-compose.yml
+#   docker compose up -d
+#   open http://localhost:3000
+#
+# Updates:
+#
+#   docker compose pull && docker compose up -d
+#
+# Everything below is overridable via a docker-compose.override.yml or env file.
+# ──────────────────────────────────────────────────────────────────────────
+
+services:
+  sbom:
+    image: merlin2539/sbom:latest
+    # Alternative source: ghcr.io/merlin2533/sbom:latest
+    container_name: sbom
+    restart: unless-stopped
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      # ──────── runtime ────────
+      PORT: "3000"
+      HOST: "0.0.0.0"
+
+      # ──────── scratch / privacy ────────
+      # The container's /scratch is a tmpfs (see below) — uploads, extracted
+      # contents, SBOM and report all live in RAM and disappear on stop.
+      SCRATCH_DIR: "/scratch"
+
+      # ──────── extract-sbom ────────
+      EXTRACT_SBOM_BIN: "/usr/local/bin/extract-sbom"
+      # Container itself is the outer sandbox; flip to "bwrap" *and* uncomment
+      # the `cap_add: SYS_ADMIN` block below if you want the inner sandbox too.
+      SANDBOX_MODE: "none"
+      # Append extra flags, e.g. "--unsafe" or "--grype":
+      # EXTRACT_SBOM_ARGS: ""
+
+      # ──────── limits ────────
+      MAX_UPLOAD_BYTES: "5368709120"    # 5 GiB
+      SESSION_IDLE_MS: "1800000"        # 30 min
+      UPLOAD_RATE_PER_MIN: "5"
+      SHUTDOWN_GRACE_MS: "30000"
+
+      # ──────── observability ────────
+      LOG_LEVEL: "info"
+      LOG_PRETTY: "0"                   # set "1" for human-readable stdout
+
+      # ──────── access control ────────
+      # Uncomment both to gate every route behind HTTP Basic Auth:
+      # AUTH_USER: "ops"
+      # AUTH_PASS: "change-me"
+
+      # ──────── reverse-proxy ────────
+      # If you put this behind nginx/Caddy/Traefik with TLS:
+      # TRUST_PROXY: "1"
+
+    # In-memory scratch space. Adjust `size` to whatever your host can spare;
+    # 8 GiB is enough for one 5 GiB upload + extraction + outputs. Remove the
+    # whole `tmpfs` block to use disk-backed storage instead.
+    tmpfs:
+      - /scratch:rw,nosuid,nodev,size=8g,mode=1700
+
+    # Drop every capability by default. Re-add SYS_ADMIN only if you turn on
+    # SANDBOX_MODE=bwrap (bubblewrap needs it for user/mount namespaces).
+    cap_drop:
+      - ALL
+    # cap_add:
+    #   - SYS_ADMIN
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # Resource budget (optional, uncomment + tune):
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 10g
+    #       cpus: "4"
+
+# To put TLS in front, drop the published port above and add a reverse proxy
+# such as Caddy or Traefik in this same compose file pointing at sbom:3000.

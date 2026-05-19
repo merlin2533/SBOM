@@ -1,0 +1,120 @@
+name: docker-publish
+
+# Build the container image and push it to Docker Hub
+# (merlin2539/sbom) plus GitHub Container Registry
+# (ghcr.io/<owner>/sbom).
+#
+# Triggers:
+#   - push to main          → tag `latest` + `sha-<short>` + `main`
+#   - push of a v*.*.* tag  → tag the semver (e.g. `1.2.3`, `1.2`, `latest`)
+#   - workflow_dispatch     → manual run on any branch / ref
+#
+# Required repository secrets:
+#   DOCKERHUB_USERNAME  — owner of the Docker Hub image
+#   DOCKERHUB_TOKEN     — access token with write scope
+#
+# GHCR uses the built-in GITHUB_TOKEN, no extra secret needed.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'buildx platforms (comma-separated)'
+        required: false
+        default: 'linux/amd64'
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOCKERHUB_IMAGE: merlin2539/sbom
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/sbom
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write          # required to push to ghcr.io
+      id-token: write          # for keyless provenance if enabled later
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.GHCR_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=sbom-upload-app
+            org.opencontainers.image.description=Ephemeral web frontend for TomTonic/extract-sbom
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: ${{ github.event.inputs.platforms || 'linux/amd64' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Summary
+        run: |
+          {
+            echo "### Pushed images"
+            echo ""
+            echo "\`\`\`"
+            echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n'
+            echo "\`\`\`"
+            echo ""
+            echo "Pull with:"
+            echo ""
+            echo '```bash'
+            echo "docker pull ${{ env.DOCKERHUB_IMAGE }}:latest"
+            echo "# or:"
+            echo "docker pull ${{ env.GHCR_IMAGE }}:latest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
