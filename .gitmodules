@@ -1,0 +1,3 @@
+[submodule "vendor/extract-sbom"]
+	path = vendor/extract-sbom
+	url = https://github.com/TomTonic/extract-sbom.git

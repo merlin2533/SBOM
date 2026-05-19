@@ -8,3 +8,7 @@ public/dist/
 public/vendor/
 coverage/
 *.tsbuildinfo
+
+# Built extract-sbom Go binary lands here; platform-specific, rebuilt by scripts/install.sh
+/bin/*
+!/bin/.gitkeep
