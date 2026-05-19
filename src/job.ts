@@ -9,6 +9,7 @@ import type { ServerConfig, Session, Job, SandboxKind } from './types';
 import { SessionManager } from './session';
 import { wrapCommand } from './sandbox';
 import { shredUnlink } from './shred';
+import { preExtract, cleanupPreExtract, PreExtractResult } from './pre-extract';
 
 export interface EnqueueOpts {
   uploadPath: string;
@@ -92,12 +93,43 @@ export class JobRunner {
   private async launchJob(sess: Session, job: Job): Promise<void> {
     const { passwords } = await this.preparePasswords(sess, job);
 
+    // Pre-Extract: extract-sbom kennt nur Container-Formate per Magic-Bytes.
+    // Für reine `.exe`-Installer (Inno Setup, NSIS, ...) versuchen wir, das
+    // Archiv mit 7z bzw. innoextract aufzuknacken und als ZIP zu repacken,
+    // damit extract-sbom überhaupt was zu tun bekommt.
+    const preWorkDir = path.join(sess.dir, 'jobs', job.id, 'pre');
+    let pre: PreExtractResult | null = null;
+    try {
+      pre = await preExtract({
+        uploadPath: job.uploadPath,
+        uploadName: job.inputName,
+        workDir: preWorkDir,
+        logger: this.logger,
+        jobId: job.id,
+      });
+    } catch (e) {
+      this.logger.warn({ jobId: job.id, err: e }, 'pre-extract threw, skipping');
+    }
+    const effectiveInput = pre?.inputPath ?? job.uploadPath;
+    if (pre?.didPreExtract) {
+      this.logger.info(
+        { jobId: job.id, tool: pre.tool, original: job.inputName, zipped: path.basename(pre.inputPath) },
+        'pre-extract: succeeded, passing repacked zip to extract-sbom'
+      );
+      this.sessions.pushLog(
+        sess,
+        job,
+        'stdout',
+        `[pre-extract] ${job.inputName} via ${pre.tool} → ${path.basename(pre.inputPath)}`
+      );
+    }
+
     // Build args list.
     const args: string[] = ['--output-dir', job.outDir, ...this.config.extraArgs];
     if (job.passwordFile) {
       args.push('--password-file', job.passwordFile);
     }
-    args.push(job.uploadPath);
+    args.push(effectiveInput);
 
     // Display args: replace scratch-dir prefix with basename so the client
     // never sees internal server paths.
@@ -195,6 +227,8 @@ export class JobRunner {
       try {
         await fsp.unlink(job.uploadPath);
       } catch (_) {}
+      // Pre-Extract-Müll wegräumen (ZIP + stage-Dir).
+      if (pre) await cleanupPreExtract(pre);
 
       await this.sessions.refreshOutputs(sess, job);
       this.sessions.touch(sess);

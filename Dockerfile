@@ -89,7 +89,7 @@ RUN apt-get update \
       # Binary auf PATH liegt. Lösung: bwrap weglassen, dann fällt
       # extract-sbom auf direkte exec.Command zurück — der Container ist
       # sowieso die einzige Sandbox-Schicht.
-      p7zip-full unshield \
+      p7zip-full unshield innoextract \
  && curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
       | sh -s -- -b /usr/local/bin "$SYFT_VERSION" \
  # extract-sbom prefers den kanonischen Namen 7zz; Debian installiert 7z.
