@@ -7,13 +7,18 @@
 # Published as merlin2539/sbom by .github/workflows/docker-publish.yml
 
 ARG NODE_VERSION=20
-ARG GO_VERSION=1.22
+ARG GO_VERSION=1.26
 ARG SYFT_VERSION=v1.16.0
 
 # ----------------------------------------------------------------------------
 # Stage 1 — Go build of vendor/extract-sbom
 # ----------------------------------------------------------------------------
 FROM golang:${GO_VERSION}-bookworm AS go-build
+
+# Let Go fetch a newer toolchain on the fly if vendor/extract-sbom's go.mod
+# requires one. The official `golang:` images otherwise pin GOTOOLCHAIN=local
+# and the build dies with "go.mod requires go >= X.Y.Z".
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /src
 COPY vendor/extract-sbom ./extract-sbom
