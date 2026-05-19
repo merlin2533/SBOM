@@ -83,7 +83,7 @@ commit to `main` and on every `v*.*.*` tag (see
 ```bash
 # Pull and run a one-shot container:
 docker run --rm -p 3000:3000 \
-  --tmpfs /scratch:rw,nosuid,nodev,size=8g,mode=1700 \
+  --tmpfs /scratch:rw,nosuid,nodev,size=8g,mode=0700,uid=10001,gid=10001 \
   --cap-drop=ALL --security-opt=no-new-privileges:true \
   -e SCRATCH_DIR=/scratch -e SANDBOX_MODE=none \
   merlin2539/sbom:latest
