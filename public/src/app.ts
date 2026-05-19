@@ -811,11 +811,20 @@ function applySnapshot(snap: SessionSnapshot): void {
 }
 
 // ─────────────────────────────────────────────
-// pagehide cleanup
-// ─────────────────────────────────────────────
-window.addEventListener('pagehide', () => {
-  navigator.sendBeacon('/api/reset', '');
-});
+// (pagehide cleanup wurde entfernt)
+//
+// Der frühere `navigator.sendBeacon('/api/reset')` auf `pagehide` hat
+// in Multi-Tab-Setups die Session des AKTIVEN Tabs zerstört: das
+// `sid`-Cookie ist über alle Tabs derselbe; sobald ein Hintergrund-Tab
+// von der Browser-Tab-Discarding-Heuristik weggeräumt wurde, feuerte
+// dessen pagehide → POST /api/reset → Server zerstörte die Session, die
+// der gerade sichtbare Tab benutzte → tus/SSE bekamen ab da nur noch
+// 401/440.
+//
+// Aufräumen geschieht jetzt nur noch über:
+//   * den expliziten „Neue Sitzung"-Button
+//   * den Idle-GC auf dem Server (Default 30 min)
+//   * SIGTERM-Drain des Containers
 
 // ─────────────────────────────────────────────
 // Boot

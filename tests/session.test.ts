@@ -45,21 +45,27 @@ describe('Session lifecycle', () => {
     expect(sid1).toBe(sid2);
   });
 
-  it('POST /api/reset destroys session: subsequent GET /api/state returns 440', async () => {
+  it('POST /api/reset destroys the original session; next call auto-creates a fresh one', async () => {
+    // v2.3.0 added an auto-create fallback so requests without a valid
+    // session no longer fail; they just get a brand-new one. That keeps
+    // the UI usable in multi-tab / cookie-loss scenarios.
     app = makeApp();
     const agent = request.agent(app.app);
-    await agent.get('/');
+    const first = await agent.get('/');
+    const firstCookies = first.headers['set-cookie'] as string[] | string;
+    const firstArr = Array.isArray(firstCookies) ? firstCookies : [firstCookies as string];
+    const firstSid = firstArr.find((c) => c.startsWith('sid='))?.split(';')[0]?.split('=')[1];
 
-    // Confirm session exists
-    const before = await agent.get('/api/state').set('Sec-Fetch-Site', 'same-origin');
-    expect(before.status).toBe(200);
-
-    // Reset destroys session
+    // Reset destroys the session we just got
     await agent.post('/api/reset').set('Sec-Fetch-Site', 'same-origin');
 
-    // After reset, the same cookie no longer has a session
+    // Subsequent state call succeeds (200) with a NEW sid, exposed via
+    // Set-Cookie and the X-Session-Id response header.
     const after = await agent.get('/api/state').set('Sec-Fetch-Site', 'same-origin');
-    expect(after.status).toBe(440);
+    expect(after.status).toBe(200);
+    const newSid = after.headers['x-session-id'];
+    expect(newSid).toBeDefined();
+    expect(newSid).not.toBe(firstSid);
   });
 
   it('session scratch dir is created with mode 0700', async () => {
@@ -94,12 +100,13 @@ describe('Session lifecycle', () => {
     expect(sess!.pendingUploadId).toBeNull();
   });
 
-  it('GET /api/state without a session returns 440', async () => {
+  it('GET /api/state without a session auto-creates one (200) and returns X-Session-Id', async () => {
     app = makeApp();
     const res = await request(app.app)
       .get('/api/state')
       .set('Sec-Fetch-Site', 'same-origin');
-    expect(res.status).toBe(440);
+    expect(res.status).toBe(200);
+    expect(res.headers['x-session-id']).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it('snapshot pendingUpload is null initially', async () => {
