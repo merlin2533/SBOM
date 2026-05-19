@@ -77,8 +77,15 @@ LABEL org.opencontainers.image.title="sbom-upload-app" \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       bubblewrap ca-certificates curl tini \
+      # Extraktor-Toolchain für extract-sbom — sonst klagt der Report
+      # „7zz not found", „unshield not found", „unzip not found" usw.
+      p7zip-full p7zip-rar unzip unrar-free unshield cabextract \
+      tar xz-utils bzip2 zstd \
  && curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
       | sh -s -- -b /usr/local/bin "$SYFT_VERSION" \
+ # extract-sbom sucht 7zz (neuer Binary-Name), nicht 7z (alter Name).
+ # p7zip-full installiert 7z; wir verlinken 7zz darauf.
+ && ln -s "$(command -v 7z)" /usr/local/bin/7zz \
  && rm -rf /var/lib/apt/lists/*
 
 # extract-sbom binary from stage 1.

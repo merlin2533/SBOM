@@ -472,16 +472,27 @@ export function createApp(config: ServerConfig): AppResult {
     res.json({ ok: true });
   });
 
+  // Job-Suche über alle Sessions hinweg. Downloads / Ansichten werden in
+  // neuen Tabs/Fenstern angefragt; deren Cookies können fehlen oder ein
+  // Auto-Create getriggert haben, wodurch die Original-Session nicht mehr
+  // aufgelöst würde. Wir akzeptieren das (es ist eine single-user-Box) und
+  // greifen direkt auf den Job zu, sobald die jobId stimmt.
+  function findJobAcrossSessions(jobId: string | undefined) {
+    if (!jobId) return undefined;
+    for (const s of sessions.iterate()) {
+      const j = s.jobs.find((x) => x.id === jobId);
+      if (j) return j;
+    }
+    return undefined;
+  }
+
   // --- GET /api/download/:jobId/:name ----------------------------------
   app.get(
     '/api/download/:jobId/:name',
     sameOriginOnly,
     async (req: Request, res: Response) => {
-      const sess = requireSession(req, res);
-      if (!sess) return;
-
       const jobId = req.params['jobId'];
-      const job = sess.jobs.find((j) => j.id === jobId);
+      const job = findJobAcrossSessions(jobId);
       if (!job) {
         res.status(404).json({ error: 'Job not found.' });
         return;
@@ -517,11 +528,8 @@ export function createApp(config: ServerConfig): AppResult {
     '/api/view/:jobId/:name',
     sameOriginOnly,
     async (req: Request, res: Response) => {
-      const sess = requireSession(req, res);
-      if (!sess) return;
-
       const jobId = req.params['jobId'];
-      const job = sess.jobs.find((j) => j.id === jobId);
+      const job = findJobAcrossSessions(jobId);
       if (!job) { res.status(404).send('Job not found.'); return; }
       if (job.state !== 'done' && job.state !== 'failed') {
         res.status(409).send('Job not finished.'); return;
@@ -557,14 +565,25 @@ export function createApp(config: ServerConfig): AppResult {
         return;
       }
 
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-store, private');
-      res.send(renderViewerPage({
+      const html = renderViewerPage({
         title: name,
         bodyHtml,
         downloadUrl,
         rawName: name,
-      }));
+      });
+
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, private');
+      // ?download=1 → Browser bietet die gerenderte HTML-Seite zum
+      // Speichern an, statt sie inline anzuzeigen.
+      if (req.query['download'] === '1') {
+        const htmlName = name.replace(/\.(md|markdown|json|txt|log)$/i, '') + '.html';
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${encodeURIComponent(htmlName)}"`
+        );
+      }
+      res.send(html);
     }
   );
 

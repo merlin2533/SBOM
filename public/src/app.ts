@@ -494,25 +494,40 @@ function updateJobCard(li: HTMLLIElement, job: JobSnapshot): void {
     // ?sid= damit Direkt-Navigationen ohne Cookie nicht ins 440 laufen
     const dl = withSid(`/api/download/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`);
     const view = withSid(`/api/view/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`);
-    const viewBtn = isViewable(f.name)
-      ? `<a href="${view}" target="_blank" rel="noopener" class="dl-btn">
+    const viewDl = withSid(`/api/view/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}${SID ? '&' : '?'}download=1`);
+    const viewable = isViewable(f.name);
+    const viewBtn = viewable
+      ? `<button type="button" class="dl-btn js-view"
+              data-view-url="${view}"
+              data-view-name="${escapeHtml(f.name)}">
            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
              <circle cx="12" cy="12" r="3"/>
            </svg>Ansicht
+         </button>`
+      : '';
+    const htmlDlBtn = viewable
+      ? `<a href="${viewDl}" download="${escapeHtml(f.name)}.html" class="dl-btn">
+           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+             <polyline points="14 2 14 8 20 8"/>
+           </svg>Als&nbsp;HTML
          </a>`
       : '';
     return `<li class="dl-item">
       <div class="dl-name">${escapeHtml(f.name)}</div>
       <div class="filesize">${fmtBytes(f.size)}</div>
-      ${viewBtn}
-      <a href="${dl}" download="${escapeHtml(f.name)}" class="dl-btn">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="7 10 12 15 17 10"/>
-          <line x1="12" y1="15" x2="12" y2="3"/>
-        </svg>Herunterladen
-      </a>
+      <div class="dl-actions">
+        ${viewBtn}
+        ${htmlDlBtn}
+        <a href="${dl}" download="${escapeHtml(f.name)}" class="dl-btn">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>Original
+        </a>
+      </div>
     </li>`;
   }).join('');
 
@@ -809,6 +824,84 @@ function applySnapshot(snap: SessionSnapshot): void {
   );
   renderJobHistory(historyJobs);
 }
+
+// ─────────────────────────────────────────────
+// Inline-Modal für Bericht-Ansicht
+//
+// Statt target="_blank" (Popup-Blocker, Session-Isolation im neuen Tab)
+// holen wir die gerenderte HTML-Seite per fetch und packen sie in einen
+// Same-Document-Iframe. Der Modal-Footer bietet einen Link zum
+// Herunterladen der HTML- und der Originalfassung.
+// ─────────────────────────────────────────────
+async function openViewerModal(url: string, name: string): Promise<void> {
+  // Bestehendes Modal entfernen (falls jemand doppelt klickt).
+  document.querySelectorAll('.viewer-modal').forEach((n) => n.remove());
+
+  const overlay = document.createElement('div');
+  overlay.className = 'viewer-modal';
+  overlay.innerHTML = `
+    <div class="viewer-modal-box">
+      <header class="viewer-modal-head">
+        <span class="viewer-modal-title">${escapeHtml(name)}</span>
+        <div class="viewer-modal-actions">
+          <a href="${url}${url.includes('?') ? '&' : '?'}download=1"
+             download="${escapeHtml(name)}.html"
+             class="dl-btn">Als HTML speichern</a>
+          <button type="button" class="dl-btn js-close" aria-label="Schließen">Schließen</button>
+        </div>
+      </header>
+      <div class="viewer-modal-body">
+        <div class="viewer-modal-loading">Bericht wird geladen …</div>
+      </div>
+    </div>
+  `;
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  overlay.querySelector('.js-close')?.addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+
+  // Escape-Taste zum Schließen
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  };
+  document.addEventListener('keydown', onKey);
+
+  try {
+    const r = await authedFetch(url);
+    const body = overlay.querySelector('.viewer-modal-body');
+    if (!body) return;
+    if (!r.ok) {
+      body.innerHTML = `<p class="muted">Bericht konnte nicht geladen werden (HTTP ${r.status}).</p>`;
+      return;
+    }
+    const html = await r.text();
+    // Iframe mit srcdoc: kein neuer Netzwerk-Request, keine Session-
+    // Probleme, vollständige Isolation der Stile.
+    const iframe = document.createElement('iframe');
+    iframe.className = 'viewer-modal-iframe';
+    iframe.setAttribute('sandbox', 'allow-same-origin allow-popups');
+    iframe.srcdoc = html;
+    body.innerHTML = '';
+    body.appendChild(iframe);
+  } catch (e) {
+    const body = overlay.querySelector('.viewer-modal-body');
+    if (body) body.innerHTML = `<p class="muted">Netzwerkfehler beim Laden der Ansicht.</p>`;
+  }
+}
+
+// Klick-Delegation: jeder „Ansicht"-Button in der Job-Historie öffnet
+// das Modal. Wird einmal beim Laden registriert; gilt auch für später
+// hinzugefügte Job-Karten.
+document.addEventListener('click', (e) => {
+  const target = e.target as HTMLElement | null;
+  const btn = target?.closest('.js-view') as HTMLElement | null;
+  if (!btn) return;
+  e.preventDefault();
+  const url = btn.dataset['viewUrl'];
+  const name = btn.dataset['viewName'] ?? 'Bericht';
+  if (url) void openViewerModal(url, name);
+});
 
 // ─────────────────────────────────────────────
 // (pagehide cleanup wurde entfernt)
