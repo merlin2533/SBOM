@@ -81,6 +81,43 @@ interface LogEntry {
 }
 
 // ─────────────────────────────────────────────
+// Session-Id und Version aus den Meta-Tags ziehen.
+// Der Server setzt {{SID}} / {{VERSION}} pro Request ein. Cookie ist
+// der Primärweg, dieses Token ist der Fallback für Setups, in denen das
+// Cookie unterwegs gefiltert wird (Reverse-Proxy / Tunnel).
+// ─────────────────────────────────────────────
+const SID: string = (
+  document.querySelector('meta[name="x-sid"]') as HTMLMetaElement | null
+)?.content ?? '';
+const APP_VERSION: string = (
+  document.querySelector('meta[name="x-version"]') as HTMLMetaElement | null
+)?.content ?? '';
+
+// Pin "v…"-Placeholder durch den echten Wert ersetzen, sobald das Modul lädt.
+{
+  const vp = document.getElementById('versionPill');
+  if (vp && APP_VERSION) {
+    vp.textContent = 'v' + APP_VERSION;
+    vp.title = 'App-Version ' + APP_VERSION;
+  }
+}
+
+// Hilfsfunktion: Fetch mit Session-Header und Same-Origin-Credentials.
+function authedFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers ?? {});
+  if (SID) headers.set('X-Session-Id', SID);
+  return fetch(input, { ...init, credentials: 'same-origin', headers });
+}
+
+// Hilfsfunktion: ?sid= an eine URL anhängen (für Endpoints, die keine Header
+// transportieren können — SSE und direkte <a href>-Downloads).
+function withSid(url: string): string {
+  if (!SID) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}sid=${encodeURIComponent(SID)}`;
+}
+
+// ─────────────────────────────────────────────
 // Deutsche Beschriftungen
 // ─────────────────────────────────────────────
 const STATE_LABEL: Record<string, string> = {
@@ -454,8 +491,9 @@ function updateJobCard(li: HTMLLIElement, job: JobSnapshot): void {
   };
 
   const outputsHtml = (job.outputs || []).map((f) => {
-    const dl = `/api/download/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`;
-    const view = `/api/view/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`;
+    // ?sid= damit Direkt-Navigationen ohne Cookie nicht ins 440 laufen
+    const dl = withSid(`/api/download/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`);
+    const view = withSid(`/api/view/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`);
     const viewBtn = isViewable(f.name)
       ? `<a href="${view}" target="_blank" rel="noopener" class="dl-btn">
            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -533,12 +571,13 @@ qs<HTMLFormElement>('#form').addEventListener('submit', async (e) => {
 
   const upload = new tus.Upload(file, {
     endpoint: '/api/tus',
-    // tus-js-client defaults to credentials="omit" so the session cookie is
-    // dropped from the upload requests. We're always same-origin, so flip
-    // both XHR-style (`withCredentials`) and fetch-style (`credentials`)
-    // explicitly on to keep `sid` flowing.
+    // Cookie-Fallback: viele Reverse-Proxy- und Tunnel-Setups (kein TLS,
+    // unterschiedliche Origin-Wahrnehmung im Browser) lassen das Session-
+    // Cookie verschwinden. Wir senden die sid zusätzlich als X-Session-Id-
+    // Header, der Server akzeptiert beides.
     withCredentials: true,
     credentials: 'same-origin',
+    headers: SID ? { 'X-Session-Id': SID } : {},
     chunkSize: 16 * 1024 * 1024, // 16 MiB
     retryDelays: [0, 1000, 3000, 5000, 10000],
     metadata: {
@@ -580,9 +619,8 @@ qs<HTMLFormElement>('#form').addEventListener('submit', async (e) => {
 
       // POST /api/jobs to enqueue the analysis job
       try {
-        const res = await fetch('/api/jobs', {
+        const res = await authedFetch('/api/jobs', {
           method: 'POST',
-          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ passwords: passwordsValue }),
         });
@@ -634,7 +672,7 @@ cancelUploadBtn.addEventListener('click', async () => {
 cancelJobBtn.addEventListener('click', async () => {
   cancelJobBtn.disabled = true;
   try {
-    const r = await fetch('/api/cancel', { method: 'POST', credentials: 'same-origin' });
+    const r = await authedFetch('/api/cancel', { method: 'POST' });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
       toast((j as { error?: string }).error ?? 'Konnte nicht abbrechen.', 'error');
@@ -650,7 +688,7 @@ cancelJobBtn.addEventListener('click', async () => {
 // Reset / new session button
 // ─────────────────────────────────────────────
 resetBtn.addEventListener('click', async () => {
-  await fetch('/api/reset', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+  await authedFetch('/api/reset', { method: 'POST' }).catch(() => {});
   location.reload();
 });
 
@@ -661,10 +699,10 @@ let es: EventSource | null = null;
 
 function connectEvents(): void {
   if (es) { try { es.close(); } catch (_) {} }
-  // withCredentials makes EventSource send the session cookie even when the
-  // page is being served through a reverse proxy or tunnel that the browser
-  // perceives as a slightly different origin.
-  es = new EventSource('/api/events', { withCredentials: true });
+  // withCredentials versucht das Cookie mitzusenden. Wenn das Setup das
+  // Cookie verschluckt, hängen wir die sid zusätzlich als Query-Parameter
+  // an — EventSource erlaubt keine custom Headers.
+  es = new EventSource(withSid('/api/events'), { withCredentials: true });
 
   es.addEventListener('state', (ev: MessageEvent) => {
     const snap: SessionSnapshot = JSON.parse(ev.data);

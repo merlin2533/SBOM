@@ -1,11 +1,14 @@
 import path from 'path';
 import fsp from 'fs/promises';
 import fs from 'fs';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
 import pino from 'pino';
 import { marked } from 'marked';
 import type { ServerConfig, SandboxKind } from './types';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const pkg = require('../package.json') as { version: string };
+const APP_VERSION = pkg.version;
 import { SessionManager } from './session';
 import { JobRunner } from './job';
 import { createLogger, createHttpLogger } from './logger';
@@ -184,12 +187,40 @@ export function createApp(config: ServerConfig): AppResult {
 
   // ------------------------------------------------------------------
   // Session helper used by route handlers and tus handler
+  //
+  // Cookies are the primary transport, but some proxy/tunnel setups
+  // strip them. We accept the session id from three places in order:
+  //   1. `sid` cookie  (default browser path)
+  //   2. `X-Session-Id` HTTP header  (set by tus + fetch in app.ts)
+  //   3. `?sid=` query parameter  (used by SSE which can't set headers,
+  //      and by download/view links so they survive cookie loss)
   // ------------------------------------------------------------------
 
+  function getSid(req: Request): string | undefined {
+    const fromCookie = req.cookies?.['sid'] as string | undefined;
+    if (fromCookie) return fromCookie;
+    const fromHeader = req.get('X-Session-Id');
+    if (fromHeader) return fromHeader;
+    const fromQuery = req.query['sid'];
+    if (typeof fromQuery === 'string' && fromQuery) return fromQuery;
+    return undefined;
+  }
+
   function requireSession(req: Request, res: Response) {
-    const sid = req.cookies?.['sid'] as string | undefined;
+    const sid = getSid(req);
     const sess = sessions.get(sid);
     if (!sess) {
+      // Log the missing-session case once so operators can diagnose cookie
+      // / header transport issues without dumping the full request log.
+      logger.warn(
+        {
+          path: req.path,
+          hasCookieHeader: !!req.headers.cookie,
+          hasSidHeader: !!req.get('X-Session-Id'),
+          hasSidQuery: !!req.query['sid'],
+        },
+        'session not found'
+      );
       res.status(440).json({ error: 'Session expired. Reload the page.' });
       return null;
     }
@@ -207,8 +238,10 @@ export function createApp(config: ServerConfig): AppResult {
     scratchDir: config.scratchDir,
     maxUploadBytes: config.maxUploadBytes,
     getSession: (req: Request) => {
-      const sid = req.cookies?.['sid'] as string | undefined;
-      return sessions.get(sid);
+      // tus mounts before cookieParser sees the request inside its own
+      // middleware chain, so consult the same three transports requireSession
+      // does — cookie, X-Session-Id header, ?sid query — to be robust.
+      return sessions.get(getSid(req));
     },
     onUploadFinished(sess, info) {
       // Store the pending upload info on the session so POST /api/jobs can
@@ -237,6 +270,22 @@ export function createApp(config: ServerConfig): AppResult {
   // ------------------------------------------------------------------
 
   // --- GET / — wipe previous session, create new, serve SPA -----------
+  //
+  // Reads index.html once at startup and template-replaces the {{SID}} and
+  // {{VERSION}} placeholders on each request. The SID also lands in an
+  // HttpOnly cookie, but the meta tag is what makes the header/query-param
+  // fallback work — useful when browsers or proxies eat the cookie.
+  const INDEX_HTML_TEMPLATE = (() => {
+    try {
+      return fs.readFileSync(
+        path.join(__dirname, '..', 'public', 'index.html'),
+        'utf8'
+      );
+    } catch (_) {
+      return '';
+    }
+  })();
+
   app.get('/', async (req: Request, res: Response) => {
     const prev = req.cookies?.['sid'] as string | undefined;
     if (prev) {
@@ -254,7 +303,12 @@ export function createApp(config: ServerConfig): AppResult {
       secure: !!req.secure,
       path: '/',
     });
-    res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store, private');
+    const html = INDEX_HTML_TEMPLATE
+      .replace('{{SID}}', sess.sid)
+      .replace('{{VERSION}}', APP_VERSION);
+    res.send(html);
   });
 
   // --- GET /api/state --------------------------------------------------
@@ -477,6 +531,7 @@ export function createApp(config: ServerConfig): AppResult {
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({
       ok: true,
+      version: APP_VERSION,
       sessions: sessions.iterate().length,
       sandbox: sandboxKind,
       bin: config.extractSbomBin,
