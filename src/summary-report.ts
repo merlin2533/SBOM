@@ -541,9 +541,11 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
       ).join(' · ');
       const score = v.cvss?.[0]?.metrics?.baseScore;
       const desc = (v.description ?? '').replace(/\s+/g, ' ').trim();
+      const cveId = escapeHtml(v.id ?? '?');
+      const anchorId = `cve-${(v.id ?? 'unknown').replace(/[^a-zA-Z0-9-]/g, '-')}`;
       return `
-        <tr>
-          <td class="mono small">${escapeHtml(v.id ?? '?')}</td>
+        <tr id="${anchorId}">
+          <td class="mono small">${cveId}</td>
           <td>
             <strong>${escapeHtml(a.name ?? '?')}</strong>
             <span class="muted small">@${escapeHtml(a.version ?? '?')}</span>
@@ -579,6 +581,145 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
       </details>`;
   }).join('\n');
 
+  // ── A.1 Top-5-Risiken-Karte ─────────────────────────────────────────────────
+  // Priorität: Critical+Fix > Critical ohne Fix > High+Fix > High ohne Fix > Medium
+  function topRiskScore(m: GrypeMatch): number {
+    const sev = normalizeSeverity(m.vulnerability?.severity);
+    const hasFix = (m.vulnerability?.fix?.versions?.length ?? 0) > 0 ? 1 : 0;
+    const cvss = m.vulnerability?.cvss?.[0]?.metrics?.baseScore ?? 0;
+    const sevRank: Record<Severity, number> = { Critical: 1000, High: 500, Medium: 100, Low: 10, Negligible: 1, Unknown: 0 };
+    return sevRank[sev] * 10 + hasFix * 5 + cvss;
+  }
+
+  const topRiskMatches = matches
+    .filter((m) => {
+      const s = normalizeSeverity(m.vulnerability?.severity);
+      return s === 'Critical' || s === 'High' || s === 'Medium';
+    })
+    .sort((a, b) => topRiskScore(b) - topRiskScore(a))
+    .slice(0, 5);
+
+  const topRisksHtml = topRiskMatches.length === 0 ? '' : (() => {
+    const rows = topRiskMatches.map((m) => {
+      const v = m.vulnerability ?? {};
+      const a = m.artifact ?? {};
+      const sev = normalizeSeverity(v.severity);
+      const c = SEVERITY_COLORS[sev];
+      const score = v.cvss?.[0]?.metrics?.baseScore;
+      const hasFix = (v.fix?.versions?.length ?? 0) > 0;
+      const fixStr = hasFix ? escapeHtml(v.fix!.versions!.join(', ')) : '—';
+      const desc = (v.description ?? '').replace(/\s+/g, ' ').trim();
+      const cveId = v.id ?? '?';
+      const anchorId = `cve-${cveId.replace(/[^a-zA-Z0-9-]/g, '-')}`;
+      return `<tr style="cursor:pointer" onclick="document.getElementById('${anchorId}')&&(document.getElementById('${anchorId}').closest('details')||document.body).setAttribute('open',''),document.getElementById('${anchorId}')?.closest('details')?.setAttribute('open',''),document.getElementById('${anchorId}')?.scrollIntoView({behavior:'smooth',block:'center'})">
+        <td class="mono small"><a href="#${anchorId}" onclick="event.stopPropagation()">${escapeHtml(cveId)}</a></td>
+        <td><span class="sev-badge" style="background:${c.border};color:#fff;font-size:.72rem;padding:.15rem .5rem;border-radius:999px">${sev}</span></td>
+        <td class="mono small">${escapeHtml(a.name ?? '?')}@${escapeHtml(a.version ?? '?')}</td>
+        <td class="mono small">${score != null ? score.toFixed(1) : '—'}</td>
+        <td class="mono small">${hasFix ? `<span style="color:#15803d;font-weight:600">✓ ${fixStr}</span>` : '<span class="muted">—</span>'}</td>
+        <td class="small">${desc ? escapeHtml(desc.slice(0, 120)) + (desc.length > 120 ? '…' : '') : '<span class="muted">—</span>'}</td>
+      </tr>`;
+    }).join('');
+    return `
+    <div class="top-risks-card">
+      <div class="top-risks-title">🔥 Top-Risiken — diese fünf zuerst angehen</div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>CVE</th><th>Severity</th><th>Paket@Version</th><th>CVSS</th><th>Fix verfügbar</th><th>Beschreibung</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  })();
+
+  // ── A.2 Top-Komponenten nach Risiko ─────────────────────────────────────────
+  // Risiko-Score: critCount*10 + highCount*5 + medCount*2 + lowCount*0.5
+  interface CompRisk {
+    key: string;
+    name: string;
+    version: string;
+    ecosystem: string;
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+    score: number;
+  }
+
+  const compRiskMap = new Map<string, CompRisk>();
+  for (const m of matches) {
+    const a = m.artifact ?? {};
+    const sev = normalizeSeverity(m.vulnerability?.severity);
+    const key = `${a.name ?? '?'}@${a.version ?? '?'}`;
+    if (!compRiskMap.has(key)) {
+      // Find corresponding component for ecosystem
+      const comp = comps.find((c) => c.name === a.name && c.version === a.version);
+      compRiskMap.set(key, {
+        key,
+        name: a.name ?? '?',
+        version: a.version ?? '?',
+        ecosystem: comp ? ecosystemOf(comp) : (a as { type?: string }).type ?? 'unknown',
+        critical: 0, high: 0, medium: 0, low: 0, score: 0,
+      });
+    }
+    const cr = compRiskMap.get(key)!;
+    if (sev === 'Critical') cr.critical++;
+    else if (sev === 'High') cr.high++;
+    else if (sev === 'Medium') cr.medium++;
+    else if (sev === 'Low') cr.low++;
+    cr.score = cr.critical * 10 + cr.high * 5 + cr.medium * 2 + cr.low * 0.5;
+  }
+
+  const topComps = [...compRiskMap.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+
+  // Build __COMPONENT_CVES__ mapping
+  const componentCvesMap: Record<string, Array<{ id: string; severity: string; cvss: number | null; fix: string | null }>> = {};
+  for (const m of matches) {
+    const a = m.artifact ?? {};
+    const v = m.vulnerability ?? {};
+    const key = `${a.name ?? '?'}@${a.version ?? '?'}`;
+    if (!componentCvesMap[key]) componentCvesMap[key] = [];
+    componentCvesMap[key].push({
+      id: v.id ?? '?',
+      severity: normalizeSeverity(v.severity),
+      cvss: v.cvss?.[0]?.metrics?.baseScore ?? null,
+      fix: v.fix?.versions?.length ? v.fix.versions.join(', ') : null,
+    });
+  }
+
+  const topCompsHtml = topComps.length === 0 ? '' : (() => {
+    const rows = topComps.map((cr) => {
+      const dataKey = escapeHtml(JSON.stringify(cr.key));
+      return `<tr class="comp-risk-row" data-comp="${escapeHtml(cr.key)}" style="cursor:pointer" title="Klicken für CVE-Details">
+        <td><strong>${escapeHtml(cr.name)}</strong></td>
+        <td class="mono small">${escapeHtml(cr.version)}</td>
+        <td class="mono"><strong>${cr.score % 1 === 0 ? cr.score : cr.score.toFixed(1)}</strong></td>
+        <td class="small">
+          ${cr.critical > 0 ? `<span style="color:#b91c1c;font-weight:700">${cr.critical}C</span> ` : ''}
+          ${cr.high > 0 ? `<span style="color:#dc2626">${cr.high}H</span> ` : ''}
+          ${cr.medium > 0 ? `<span style="color:#d97706">${cr.medium}M</span> ` : ''}
+          ${cr.low > 0 ? `<span style="color:#65a30d">${cr.low}L</span>` : ''}
+        </td>
+        <td class="small muted">${escapeHtml(cr.ecosystem)}</td>
+      </tr>
+      <tr class="comp-drill-row" id="drill-${escapeHtml(cr.key.replace(/[^a-zA-Z0-9]/g, '-'))}" style="display:none">
+        <td colspan="5" class="drill-panel"></td>
+      </tr>`;
+    }).join('');
+    return `
+    <div class="top-risks-card" style="--accent-risk:#d97706;margin-top:.8rem">
+      <div class="top-risks-title">⚠️ Top-Komponenten nach Risiko</div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Komponente</th><th>Version</th><th>Risiko-Score</th><th>CVE-Counts</th><th>Ecosystem</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  })();
+
   const residualHtml = residualRisk
     ? `
       <details class="group residual" open>
@@ -591,6 +732,8 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
         </div>
       </details>`
     : '';
+
+  const componentCvesJson = JSON.stringify(componentCvesMap);
 
   const html = `<!doctype html>
 <html lang="de">
@@ -690,9 +833,35 @@ background:var(--card);border-bottom:1px solid var(--border)}
 border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
 .tbl-filter:focus{outline:2px solid var(--accent);outline-offset:1px}
 .filter-count{white-space:nowrap;font-size:.78rem;color:var(--muted)}
+.top-risks-card{border-left:4px solid #b91c1c;background:#fff5f5;border-radius:10px;
+padding:1rem 1.2rem;margin:.8rem 0}
+@media (prefers-color-scheme:dark){.top-risks-card{background:#1c0a0a}}
+.top-risks-title{font-size:.9rem;font-weight:700;margin-bottom:.7rem;color:#b91c1c}
+.top-risks-card table th{background:#fee2e2;color:#7f1d1d}
+.drill-panel{background:var(--accent-soft);padding:.7rem 1rem;font-size:.85rem}
+.drill-panel table{font-size:.82rem}
+.drill-panel th{font-size:.72rem}
+.comp-risk-row:hover{background:rgba(0,43,127,.04)}
+.print-btn{position:fixed;bottom:1.2rem;right:1.2rem;padding:.55rem 1.1rem;
+background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:.85rem;
+font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:100}
+.print-btn:hover{background:var(--accent-2)}
+@media print{
+  body{padding:1cm;background:white;color:black}
+  main{box-shadow:none;border:1px solid #ccc}
+  details{page-break-inside:avoid}
+  details > summary{cursor:default}
+  details:not([open]) > *{display:block !important}
+  details[open] > *{display:block !important}
+  .filter-bar,.viewer-modal,.print-btn{display:none !important}
+  table{font-size:9pt}
+  h1,h2,.section-title,details > summary{break-after:avoid}
+  section,details{page-break-before:auto}
+}
 </style>
 </head>
 <body>
+<button class="print-btn" onclick="window.print()">Drucken / PDF</button>
 <main>
   <header class="summary">
     <h1>Gesamtübersicht</h1>
@@ -712,6 +881,9 @@ border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
           </ul>` : ''}
       </div>
     </div>
+
+    ${topRisksHtml}
+    ${topCompsHtml}
 
     <div class="kv">
       <div>
@@ -761,7 +933,9 @@ border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
   </footer>
 </main>
 <script>
+window.__COMPONENT_CVES__ = ${componentCvesJson};
 (function(){
+  // Filter-Logik
   function setupFilter(input){
     var total=parseInt(input.dataset.total||'0',10);
     var countEl=input.parentNode.querySelector('.filter-count');
@@ -784,6 +958,52 @@ border-radius:6px;font-size:.83rem;background:var(--bg);color:var(--fg)}
     });
   }
   document.querySelectorAll('.tbl-filter').forEach(setupFilter);
+
+  // Komponenten-Drill-Down
+  var SEV_COLORS={Critical:'#b91c1c',High:'#dc2626',Medium:'#d97706',Low:'#65a30d',Negligible:'#6b7280',Unknown:'#9ca3af'};
+  function renderDrillPanel(compKey,panel){
+    var cves=(window.__COMPONENT_CVES__||{})[compKey]||[];
+    if(!cves.length){panel.innerHTML='<em>Keine CVEs gefunden.</em>';return;}
+    var rows=cves.map(function(c){
+      var color=SEV_COLORS[c.severity]||'#888';
+      return '<tr><td class="mono small">'+escHtml(c.id)+'</td>'
+        +'<td><span style="background:'+color+';color:#fff;padding:.1rem .4rem;border-radius:4px;font-size:.72rem;font-weight:700">'+escHtml(c.severity)+'</span></td>'
+        +'<td class="mono small">'+(c.cvss!=null?c.cvss.toFixed(1):'—')+'</td>'
+        +'<td class="mono small">'+(c.fix?escHtml(c.fix):'<span style="color:#888">—</span>')+'</td>'
+        +'</tr>';
+    }).join('');
+    panel.innerHTML='<table><thead><tr><th>CVE</th><th>Severity</th><th>CVSS</th><th>Fix-Version</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+  function escHtml(s){return String(s).replace(/[&<>"\']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]||c;});}
+  document.querySelectorAll('.comp-risk-row').forEach(function(row){
+    row.addEventListener('click',function(){
+      var compKey=row.getAttribute('data-comp');
+      var drillId='drill-'+compKey.replace(/[^a-zA-Z0-9]/g,'-');
+      var drillRow=document.getElementById(drillId);
+      if(!drillRow)return;
+      var isOpen=drillRow.style.display!=='none';
+      // Close all others
+      document.querySelectorAll('.comp-drill-row').forEach(function(r){r.style.display='none';});
+      if(!isOpen){
+        drillRow.style.display='';
+        var panel=drillRow.querySelector('.drill-panel');
+        if(panel)renderDrillPanel(compKey,panel);
+      }
+    });
+  });
+
+  // CVE-Anker: Details aufklappen bei Navigation
+  function openAnchorDetails(){
+    var hash=window.location.hash;
+    if(!hash)return;
+    var el=document.querySelector(hash);
+    if(!el)return;
+    var det=el.closest('details');
+    if(det&&!det.open)det.open=true;
+    setTimeout(function(){el.scrollIntoView({behavior:'smooth',block:'center'});},100);
+  }
+  window.addEventListener('hashchange',openAnchorDetails);
+  openAnchorDetails();
 })();
 </script>
 </body>

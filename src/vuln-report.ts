@@ -357,9 +357,26 @@ background:var(--card);border-bottom:1px solid var(--border)}
 border-radius:6px;font-size:.85rem;background:var(--bg);color:var(--fg)}
 .tbl-filter:focus{outline:2px solid var(--accent);outline-offset:1px}
 .filter-count{white-space:nowrap;font-size:.8rem;color:var(--muted)}
+.print-btn{position:fixed;bottom:1.2rem;right:1.2rem;padding:.55rem 1.1rem;
+background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:.85rem;
+font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:100}
+.print-btn:hover{background:var(--accent-2)}
+@media print{
+  body{padding:1cm;background:white;color:black}
+  main{box-shadow:none;border:1px solid #ccc}
+  details{page-break-inside:avoid}
+  details > summary{cursor:default}
+  details:not([open]) > *{display:block !important}
+  details[open] > *{display:block !important}
+  .filter-bar,.viewer-modal,.print-btn{display:none !important}
+  table{font-size:9pt}
+  h1,h2,.section-title,details > summary{break-after:avoid}
+  section,details{page-break-before:auto}
+}
 </style>
 </head>
 <body>
+<button class="print-btn" onclick="window.print()">Drucken / PDF</button>
 <main>
   <header class="report">
     <h1>Schwachstellenbericht</h1>
