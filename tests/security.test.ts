@@ -77,15 +77,16 @@ describe('CSRF guard (sameOriginOnly) — disabled in permissive mode', () => {
 
   it('POST /api/cancel with Sec-Fetch-Site: cross-site is no longer rejected', async () => {
     // Used to return 403; the check was removed to keep the app working
-    // through extensions/proxies that strip Sec-Fetch-Site. Without a
-    // session the request now returns 440 instead.
+    // through extensions/proxies that strip Sec-Fetch-Site. With v2.3.0's
+    // auto-create-on-miss the request now goes through, sees no running
+    // job and answers 409.
     app = makeApp();
     const res = await request(app.app)
       .post('/api/cancel')
       .set('Sec-Fetch-Site', 'cross-site')
       .set('Content-Type', 'application/json');
     expect(res.status).not.toBe(403);
-    expect(res.status).toBe(440);
+    expect(res.status).toBe(409);
   });
 
   it('POST /api/cancel with Sec-Fetch-Site: same-origin does NOT return 403', async () => {
@@ -111,13 +112,13 @@ describe('CSRF guard (sameOriginOnly) — disabled in permissive mode', () => {
     expect(res.status).not.toBe(403);
   });
 
-  it('POST /api/cancel without session returns 440 (not 403)', async () => {
+  it('POST /api/cancel without session auto-creates one, sees no running job → 409', async () => {
     app = makeApp();
     const res = await request(app.app)
       .post('/api/cancel')
       .set('Content-Type', 'application/json');
-    // no Sec-Fetch-Site header means cross-origin check passes; no session → 440
-    expect(res.status).toBe(440);
+    // Auto-create kicks in, then there's no running job → 409.
+    expect(res.status).toBe(409);
   });
 });
 

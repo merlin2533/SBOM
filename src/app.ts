@@ -227,22 +227,32 @@ export function createApp(config: ServerConfig): AppResult {
   }
 
   function requireSession(req: Request, res: Response) {
-    const sess = resolveSession(req);
+    let sess = resolveSession(req);
     if (!sess) {
+      // Auto-Create-Fallback: in echten Deployments verlieren Browser
+      // hier und da das Cookie (Multi-Tab-pagehide, Container-Restart,
+      // Proxy-Stripping). Statt 440 zu werfen erzeugen wir on-the-fly
+      // eine frische Session und sagen dem Client per Set-Cookie +
+      // X-Session-Id-Antwortheader, dass er sie ab jetzt benutzen soll.
+      // Damit überlebt jeder API-Call den Tab/Cookie-Tod, ohne dass der
+      // Nutzer „Neue Sitzung" drücken muss.
+      sess = sessions.create();
       logger.warn(
         {
           path: req.path,
+          newSid: sess.sid,
           hasCookieHeader: !!req.headers.cookie,
           hasSidHeader: !!req.get('X-Session-Id'),
           hasSidQuery: !!req.query['sid'],
           candidateCount: getSidCandidates(req).length,
         },
-        'session not found — all sid candidates failed to resolve'
+        'session not found — auto-created replacement'
       );
-      res.status(440).json({ error: 'Session expired. Reload the page.' });
-      return null;
+      res.cookie('sid', sess.sid, { httpOnly: false, path: '/' });
+      res.setHeader('X-Session-Id', sess.sid);
+    } else {
+      sessions.touch(sess);
     }
-    sessions.touch(sess);
     return sess;
   }
 
@@ -256,9 +266,19 @@ export function createApp(config: ServerConfig): AppResult {
     scratchDir: config.scratchDir,
     maxUploadBytes: config.maxUploadBytes,
     getSession: (req: Request) => {
-      // Use the same try-all-candidates resolver so a stale cookie can't
-      // shadow a fresh sid coming in via X-Session-Id or ?sid=.
-      return resolveSession(req);
+      // tus muss IMMER eine Session bekommen, sonst gibt's 401. Wenn
+      // keine vorhanden ist (Tab-Kollision, Container-Restart) legen
+      // wir hier eine neue an, damit der Upload nicht stirbt. Dieselbe
+      // Strategie wie in requireSession; die Session wird auch im
+      // Response-Header gemeldet, falls der Client mitlesen will.
+      const existing = resolveSession(req);
+      if (existing) return existing;
+      const fresh = sessions.create();
+      logger.warn(
+        { path: req.path, newSid: fresh.sid },
+        'tus: no session — auto-created'
+      );
+      return fresh;
     },
     onUploadFinished(sess, info) {
       // Store the pending upload info on the session so POST /api/jobs can
