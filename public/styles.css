@@ -1226,22 +1226,213 @@ footer em {
 /* ============================================================================
    Responsive
    ========================================================================= */
+/* ============================================================================
+   Tablet / mittleres Layout (Breakpoint: 720px)
+   ========================================================================= */
 @media (max-width: 720px) {
   main { padding: 1rem 1rem 3rem; gap: .9rem; }
-  .topbar-inner { padding: .9rem 1rem; }
-  .card { padding: 1.1rem 1.1rem; }
-  .card-head { margin-bottom: .9rem; }
-  .kv-grid { padding: .85rem; gap: .8rem; }
+  .topbar-inner { padding: .85rem 1rem; gap: .65rem; }
+  .card { padding: 1.05rem 1.05rem; }
+  .card-head {
+    margin-bottom: .9rem;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .4rem;
+  }
+  .card-head h2 { font-size: .78rem; }
+  .kv-grid { padding: .85rem; gap: .8rem; grid-template-columns: 1fr 1fr; }
   .title { font-size: .98rem; }
   .subtitle { font-size: .78rem; }
-  .dropzone { padding: 1.5rem 1rem; min-height: 140px; }
-  .job-card-summary { gap: .5rem; padding: .7rem .85rem .7rem .95rem; }
-  .job-card-runtime { width: 100%; margin-left: 0; order: 99; }
+  .dropzone { padding: 1.4rem 1rem; min-height: 140px; }
+  .dz-empty svg { width: 28px; height: 28px; }
+  .dz-empty { gap: .4rem; }
+
+  /* Job-Karten kompakter + nicht-überlaufende Beschriftung */
+  .job-card-summary {
+    gap: .45rem;
+    padding: .7rem .85rem .7rem .95rem;
+    align-items: center;
+  }
+  .job-card-name {
+    flex: 1 1 100%;
+    order: 5;
+    min-width: 0;
+    font-size: .95rem;
+  }
+  .job-card-size, .job-card-runtime {
+    font-size: .75rem;
+  }
+  .job-card-runtime { margin-left: auto; }
+  .job-card-detail { padding: .8rem .85rem .9rem; }
+
+  /* Download-Zeilen: drei Action-Buttons UNTER dem Dateinamen, voll breit */
+  .dl-item, .downloads li {
+    flex-wrap: wrap;
+    gap: .35rem .6rem;
+  }
+  .dl-item .dl-name, .downloads .dl-name {
+    flex: 1 1 100%;
+    word-break: break-all;
+    min-width: 0;
+  }
+  .dl-item .filesize, .downloads .filesize {
+    flex: 0 0 auto;
+    font-size: .75rem;
+  }
+  .dl-item .dl-actions {
+    flex: 1 1 100%;
+    justify-content: stretch;
+    gap: .3rem;
+  }
+  .dl-item .dl-actions .dl-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: center;
+    text-align: center;
+    padding: .45rem .55rem;
+    font-size: .8rem;
+  }
+  .dl-btn.bundle-btn {
+    width: 100%;
+    justify-content: center;
+  }
+  .job-card-footer {
+    justify-content: stretch;
+  }
+
+  /* Process / kv-Werte umbrechen statt overflow */
+  .kv-value {
+    font-size: .85rem;
+  }
+
+  /* Logs: kleinere Schrift, niedriger */
+  .log {
+    font-size: .72rem;
+    padding: .65rem .75rem;
+    max-height: 260px;
+  }
+
+  /* Stepper kompakter */
+  .stepper { gap: .2rem; }
+  .stepper li { padding: .4rem .5rem; gap: .55rem; }
+  .step-name { font-size: .92rem; }
+
+  /* Progress-Row: Prozent unter dem Balken */
+  .progress-row { flex-wrap: wrap; }
+  .progress-track { flex: 1 1 100%; }
+  .progress-pct { width: auto; text-align: left; }
+
+  /* Modal-Viewer: full viewport auf Mobile */
+  .viewer-modal { padding: 0; }
+  .viewer-modal-box {
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+  .viewer-modal-head {
+    padding: .7rem .85rem;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .55rem;
+  }
+  .viewer-modal-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+  .viewer-modal-actions .dl-btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
 }
 
+/* ============================================================================
+   Phone (Breakpoint: 480px) — kompaktestes Layout
+   ========================================================================= */
 @media (max-width: 480px) {
   body { font-size: 14px; }
+  html, body { line-height: 1.45; }
+
+  /* Versions-Pill auf engstem Layout ausblenden — Topbar bleibt einzeilig */
+  .topbar-meta .version-pill,
   .topbar-meta .pill { display: none; }
+  .topbar-meta { gap: .4rem; }
+  .topbar-inner { padding: .7rem .85rem; }
+  .logo { width: 32px; height: 32px; }
+  .logo svg { width: 18px; height: 18px; }
+  .title { font-size: .9rem; }
+  .subtitle { font-size: .72rem; }
+
+  main { padding: .8rem .75rem 2.5rem; gap: .75rem; }
+
+  .card { padding: .9rem .9rem; border-radius: 12px; }
+  .card-head h2 { font-size: .72rem; letter-spacing: .1em; }
+
+  /* KV-Grid auf eine Spalte */
+  .kv-grid {
+    grid-template-columns: 1fr;
+    padding: .7rem .8rem;
+    gap: .6rem .8rem;
+  }
+
+  /* Dropzone: kompakt */
+  .dropzone { padding: 1.1rem .8rem; min-height: 110px; }
+  .dz-empty svg { width: 24px; height: 24px; }
+  .dz-empty strong { font-size: .9rem; }
+  .dz-empty .small { font-size: .72rem; }
+
+  .file-icon { width: 38px; height: 38px; }
+  .file-icon svg { width: 22px; height: 22px; }
+
+  /* Buttons: minimum 44px Höhe für Touch (WCAG 2.5.5) */
+  button, .dl-btn, .icon-btn {
+    min-height: 40px;
+    padding: .55rem .8rem;
+  }
+  button.primary, button.ghost, button.danger {
+    padding: .6rem .9rem;
+    font-size: .92rem;
+  }
+
+  /* Job-Karten noch kompakter */
+  .job-card-summary {
+    padding: .65rem .75rem .65rem .85rem;
+    gap: .35rem;
+  }
+  .state-badge {
+    font-size: .65rem;
+    padding: .15rem .5rem;
+  }
+
+  /* Footer schmaler */
+  footer { padding-top: 1rem; font-size: .75rem; }
+
+  /* Passwords-Textarea kleiner */
+  .passwords textarea {
+    font-size: .8rem;
+    rows: 4;
+  }
+
+  /* Active Job: Phase/Progress kompakter */
+  .phase-row { padding: .7rem .85rem; }
+  .phase-label { font-size: .68rem; }
+
+  /* Toast: vollbreit am unteren Rand */
+  .toast {
+    bottom: .8rem;
+    left: .8rem;
+    right: .8rem;
+    transform: none;
+    max-width: none;
+    font-size: .85rem;
+    padding: .6rem .9rem;
+    border-radius: 12px;
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
 }
 
 /* ============================================================================

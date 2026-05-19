@@ -383,6 +383,37 @@ border-radius:6px;font-size:.85rem;background:var(--bg);color:var(--fg)}
 background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:.85rem;
 font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:100}
 .print-btn:hover{background:var(--accent-2)}
+
+/* Mobile-Optimierung */
+@media (max-width:720px){
+  body{padding:1rem .75rem 3rem;font-size:14px;line-height:1.5}
+  main{padding:1.1rem 1rem;border-radius:12px}
+  h1{font-size:1.25rem}
+  .summary-line{font-size:.85rem}
+  .chips{gap:.3rem}
+  .chip{font-size:.72rem;padding:.18rem .55rem}
+  details.sev-group > summary{padding:.55rem .75rem;font-size:.9rem;flex-wrap:wrap}
+  .sev-badge{flex:0 0 auto}
+  .sev-count{margin-left:auto;font-size:.78rem}
+  table{font-size:.8rem}
+  th,td{padding:.4rem .55rem}
+  th{font-size:.68rem}
+  .filter-bar{flex-direction:column;align-items:stretch;gap:.35rem}
+  .tbl-filter{width:100%}
+  td.desc{max-width:none}
+  .print-btn{width:100%;margin:.5rem 0 0}
+}
+@media (max-width:480px){
+  body{padding:.7rem .55rem 2rem;font-size:13px}
+  main{padding:.85rem .75rem;border-radius:8px}
+  h1{font-size:1.1rem}
+  .cve-age{font-size:.65rem;padding:.04rem .3rem;margin-left:.25rem}
+  th,td{padding:.3rem .4rem}
+  td{overflow-wrap:anywhere;word-break:break-word}
+  td.score,td.fix{white-space:normal}
+  /* Beschreibung auf engsten Geräten ausblenden — nur CVE + Pkg + CVSS + Fix */
+  th:nth-child(5),td.desc{display:none}
+}
 @media print{
   body{padding:1cm;background:white;color:black}
   main{box-shadow:none;border:1px solid #ccc}
