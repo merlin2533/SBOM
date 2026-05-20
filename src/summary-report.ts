@@ -358,6 +358,13 @@ function escapeHtml(s: string): string {
   );
 }
 
+// Gibt eine URL nur zurück, wenn sie ein http(s)-Schema hat — verhindert
+// javascript:/data:-Links in den als HTML geöffneten Reports.
+function safeHttpUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  return /^https?:\/\//i.test(url.trim()) ? url.trim() : null;
+}
+
 function fmtBytes(n: number): string {
   if (n < 1024) return n + ' B';
   const units = ['KB', 'MB', 'GB', 'TB'];
@@ -628,6 +635,7 @@ function buildExtraSections(
 
     const rows = newFindings.slice(0, 200).map((f) => {
       const c = SEVERITY_COLORS[f.severity as Severity] ?? SEVERITY_COLORS['Unknown'];
+      const url = safeHttpUrl(f.url);
       return `
         <tr>
           <td class="mono small">${escapeHtml(f.id)}</td>
@@ -635,7 +643,7 @@ function buildExtraSections(
           <td class="small">${escapeHtml(f.pkg)}</td>
           <td class="mono small">${escapeHtml(f.version)}</td>
           <td class="small">${escapeHtml(f.scanner)}</td>
-          <td class="small">${f.url ? `<a href="${escapeHtml(f.url)}" target="_blank" rel="noopener">Details</a>` : '—'}</td>
+          <td class="small">${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">Details</a>` : '—'}</td>
         </tr>`;
     }).join('');
 

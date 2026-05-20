@@ -29,8 +29,6 @@ interface GrypeVulnerability {
 
 interface GrypeArtifact {
   purl?: string;
-  name?: string;
-  version?: string;
 }
 
 interface GrypeMatch {
