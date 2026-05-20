@@ -66,7 +66,7 @@ und Weiterverschicken.
   SIGTERM oder explizitem „Neue Sitzung"
 - **Persistenter grype-DB-Cache** via Volume: 80 MB Vuln-DB
   überlebt Container-Restarts
-- **Polizeiblau-Design** mit Dark-Mode-Unterstützung, vollständig auf
+- **Modernes UI-Design** mit Dark-Mode-Unterstützung, vollständig auf
   Deutsch lokalisiert
 
 ## Outputs pro Job
