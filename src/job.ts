@@ -360,7 +360,15 @@ export class JobRunner {
               c.on('exit', (ec) => resolve(ec === 0));
               c.on('error', () => resolve(false));
             });
-            if (has7z) {
+            // Decompression-Bomb-Schutz: unkomprimierte Gesamtgröße vorab
+            // prüfen (via `7z l`), bevor wir tatsächlich entpacken.
+            const uncompressed = has7z ? await probe7zUncompressedSize(job.uploadPath) : null;
+            if (has7z && uncompressed != null && uncompressed > MAX_SECRET_EXTRACT_BYTES) {
+              this.logger.warn(
+                { jobId: job.id, uncompressed, max: MAX_SECRET_EXTRACT_BYTES },
+                'secret-scan: Archiv entpackt zu groß (mögliche Decompression-Bomb), übersprungen'
+              );
+            } else if (has7z) {
               secretTmpDir = path.join(sess.dir, 'jobs', job.id, 'secret-scan');
               try {
                 await fsp.mkdir(secretTmpDir, { recursive: true, mode: 0o700 });
@@ -951,6 +959,49 @@ function runSyftConvert(
       clearTimeout(t);
       resolve({ code: -1, stderr: e.message });
     });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Decompression-Bomb-Schutz für den Secret-Scan-Fallback ──────────────────
+
+// Obergrenze für die unkomprimierte Gesamtgröße eines Archivs, das wir für
+// den Secret-Scan auspacken. Liegt die von `7z l` gemeldete Größe darüber,
+// wird das Auspacken übersprungen (mögliche Decompression-Bomb).
+const MAX_SECRET_EXTRACT_BYTES = 4 * 1024 * 1024 * 1024; // 4 GiB
+
+// Ermittelt die unkomprimierte Gesamtgröße eines Archivs via `7z l -slt`,
+// ohne es zu entpacken.
+//   • exit 0          → Summe der gemeldeten Entry-Größen
+//   • Listing zu groß / zu langsam (Millionen Einträge) → Number.MAX_SAFE_INTEGER,
+//     damit der Aufrufer das Auspacken überspringt (Bomb-Verdacht)
+//   • 7z kann nicht auflisten → null (regulärer Extraktionsversuch folgt)
+function probe7zUncompressedSize(archivePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    let out = '';
+    let done = false;
+    let aborted = false; // wegen Output-Cap oder Timeout abgebrochen
+    const finish = (v: number | null) => { if (!done) { done = true; resolve(v); } };
+    const child = spawn('7z', ['l', '-slt', archivePath], { stdio: ['ignore', 'pipe', 'ignore'] });
+    child.stdout.on('data', (b: Buffer) => {
+      out += b.toString('utf8');
+      // Ausgabe begrenzen — ein Archiv mit Millionen Einträgen darf den
+      // Speicher nicht sprengen und ist ohnehin Bomb-verdächtig.
+      if (out.length > 32 * 1024 * 1024) { aborted = true; try { child.kill('SIGKILL'); } catch (_) {} }
+    });
+    const t = setTimeout(() => { aborted = true; try { child.kill('SIGKILL'); } catch (_) {} }, 60_000);
+    child.on('exit', (code) => {
+      clearTimeout(t);
+      if (aborted) { finish(Number.MAX_SAFE_INTEGER); return; }
+      if (code !== 0) { finish(null); return; }
+      let total = 0;
+      for (const m of out.matchAll(/^Size = (\d+)$/gm)) {
+        total += Number(m[1]);
+      }
+      finish(total);
+    });
+    child.on('error', () => { clearTimeout(t); finish(null); });
   });
 }
 
