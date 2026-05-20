@@ -876,9 +876,14 @@ function applySnapshot(snap: SessionSnapshot): void {
 // Same-Document-Iframe. Der Modal-Footer bietet einen Link zum
 // Herunterladen der HTML- und der Originalfassung.
 // ─────────────────────────────────────────────
+// Schließt das aktuell offene Viewer-Modal sauber (inkl. Aufräumen von
+// Scroll-Lock und Tastatur-Listener). Wird bei erneutem Öffnen aufgerufen.
+let activeViewerClose: (() => void) | null = null;
+
 async function openViewerModal(url: string, name: string): Promise<void> {
-  // Bestehendes Modal entfernen (falls jemand doppelt klickt).
-  document.querySelectorAll('.viewer-modal').forEach((n) => n.remove());
+  // Bestehendes Modal sauber schließen (Doppelklick / erneutes Öffnen) —
+  // stellt Body-Scroll wieder her und entfernt dessen keydown-Listener.
+  activeViewerClose?.();
 
   const overlay = document.createElement('div');
   overlay.className = 'viewer-modal';
@@ -898,16 +903,34 @@ async function openViewerModal(url: string, name: string): Promise<void> {
       </div>
     </div>
   `;
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-  overlay.querySelector('.js-close')?.addEventListener('click', () => overlay.remove());
   document.body.appendChild(overlay);
 
-  // Escape-Taste zum Schließen
-  const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  // Body-Scroll sperren, solange das Modal offen ist — verhindert, dass auf
+  // Touch-Geräten die Seite hinter dem Overlay mitscrollt (Scroll-Bleed).
+  document.body.style.overflow = 'hidden';
+
+  // Escape-Taste zum Schließen. Funktionsdeklaration → vor close() referenzierbar.
+  function onKey(e: KeyboardEvent): void {
+    if (e.key === 'Escape') close();
+  }
+
+  // Genau ein Schließpfad für alle Auslöser (Backdrop-Klick, Button, Escape):
+  // räumt Listener und Scroll-Lock zuverlässig auf (kein Listener-Leak).
+  let isClosed = false;
+  const close = (): void => {
+    if (isClosed) return;
+    isClosed = true;
+    document.removeEventListener('keydown', onKey);
+    document.body.style.overflow = '';
+    overlay.remove();
+    if (activeViewerClose === close) activeViewerClose = null;
   };
+  activeViewerClose = close;
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) close();
+  });
+  overlay.querySelector('.js-close')?.addEventListener('click', close);
   document.addEventListener('keydown', onKey);
 
   try {
