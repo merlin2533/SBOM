@@ -97,7 +97,7 @@ interface GrypeMatch {
     urls?: string[];
     description?: string;
   };
-  artifact?: { name?: string; version?: string; type?: string; purl?: string };
+  artifact?: { name?: string; version?: string; type?: string; purl?: string; locations?: Array<{ path?: string }> };
 }
 
 interface GrypeDoc {
@@ -359,6 +359,19 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>)[c]!
   );
+}
+
+// Pfad(e) im hochgeladenen Artefakt, an denen das Paket gefunden wurde —
+// macht Befunde bei mehrteiligen Uploads (z.B. ZIP mit vielen Dateien)
+// zuordenbar. grype liefert die Fundorte als artifact.locations[].path.
+function locationCell(locations?: Array<{ path?: string }>): string {
+  if (!locations?.length) return '';
+  const [first, ...rest] = [...new Set(
+    locations.map((l) => l.path).filter((p): p is string => !!p && p.trim() !== '')
+  )];
+  if (!first) return '';
+  const extra = rest.length ? ` <span class="muted">(+${rest.length})</span>` : '';
+  return `<div class="loc-path mono small" title="${escapeHtml([first, ...rest].join('\n'))}">📁 ${escapeHtml(first)}${extra}</div>`;
 }
 
 // Gibt eine URL nur zurück, wenn sie ein http(s)-Schema hat — verhindert
@@ -981,6 +994,7 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
           <td>
             <strong>${escapeHtml(a.name ?? '?')}</strong>
             <span class="muted small">@${escapeHtml(a.version ?? '?')}</span>
+            ${locationCell(a.locations)}
           </td>
           <td class="mono small">${score != null ? score.toFixed(1) : '—'}</td>
           <td class="mono small">${escapeHtml(fix)}</td>
@@ -1050,7 +1064,7 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
           ${cveAgeChip(cveId)}${kevBadge(cveId, kevMap)}${epssChip(cveId, epssMap)}
         </td>
         <td><span class="sev-badge" style="background:${c.border};color:#fff;font-size:.72rem;padding:.15rem .5rem;border-radius:999px">${sev}</span></td>
-        <td class="mono small">${escapeHtml(a.name ?? '?')}@${escapeHtml(a.version ?? '?')}</td>
+        <td class="mono small">${escapeHtml(a.name ?? '?')}@${escapeHtml(a.version ?? '?')}${locationCell(a.locations)}</td>
         <td class="mono small">${score != null ? score.toFixed(1) : '—'}</td>
         <td class="mono small">${hasFix ? `<span style="color:#15803d;font-weight:600">✓ ${fixStr}</span>` : '<span class="muted">—</span>'}</td>
         <td class="small">${desc ? escapeHtml(desc.slice(0, 120)) + (desc.length > 120 ? '…' : '') : '<span class="muted">—</span>'}</td>
@@ -1351,6 +1365,7 @@ vertical-align:middle;line-height:1.4;white-space:nowrap;cursor:help}
 .epss-chip{display:inline-block;margin-left:.3rem;padding:.05rem .4rem;font-size:.72rem;
 font-weight:600;border-radius:999px;border:1px solid currentColor;
 vertical-align:middle;line-height:1.4;white-space:nowrap;cursor:help}
+.loc-path{margin-top:.2rem;color:var(--muted);word-break:break-all;opacity:.9}
 .policy-banner{margin:0 0 1rem;padding:.8rem 1.1rem;border-radius:10px;font-weight:700;font-size:.96rem}
 .policy-ok{background:#dcfce7;color:#14532d;border:1px solid #15803d}
 .policy-warn{background:#fef9c3;color:#854d0e;border:1px solid #d97706}

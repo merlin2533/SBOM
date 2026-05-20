@@ -157,6 +157,18 @@ function escapeHtml(s: string): string {
   );
 }
 
+// Pfad(e) im hochgeladenen Artefakt, an denen das verwundbare Paket gefunden
+// wurde — macht Befunde bei mehrteiligen Uploads zuordenbar.
+function locationCell(locations?: Array<{ path?: string }>): string {
+  if (!locations?.length) return '';
+  const [first, ...rest] = [...new Set(
+    locations.map((l) => l.path).filter((p): p is string => !!p && p.trim() !== '')
+  )];
+  if (!first) return '';
+  const extra = rest.length ? ` <span class="muted">(+${rest.length})</span>` : '';
+  return `<div class="loc-path mono small" title="${escapeHtml([first, ...rest].join('\n'))}">📁 ${escapeHtml(first)}${extra}</div>`;
+}
+
 function normalizeSeverity(raw: string | undefined): Severity {
   const s = (raw ?? '').toLowerCase();
   if (s === 'critical') return 'Critical';
@@ -261,6 +273,7 @@ function buildHtmlReport(opts: {
             <span class="muted">@</span>
             <span class="mono">${escapeHtml(a.version ?? '?')}</span>
             ${a.type ? `<div class="muted small">${escapeHtml(a.type)}</div>` : ''}
+            ${locationCell(a.locations)}
           </td>
           <td class="score mono">${escapeHtml(scoreCell)}</td>
           <td class="fix mono">${escapeHtml(fix)}</td>
@@ -369,6 +382,7 @@ line-height:1.4;letter-spacing:0;white-space:nowrap}
 td.score{white-space:nowrap;font-variant-numeric:tabular-nums;width:60px;text-align:right}
 td.fix{white-space:nowrap;font-size:.85rem}
 td.pkg{min-width:160px}
+.loc-path{margin-top:.2rem;color:var(--muted);word-break:break-all;opacity:.9}
 td.desc{max-width:560px}
 td.desc a{color:var(--accent)}
 footer.report{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border);
