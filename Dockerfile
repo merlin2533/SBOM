@@ -165,8 +165,8 @@ COPY --from=go-build /out/extract-sbom /usr/local/bin/extract-sbom
 # Container-Restarts, sodass grype's ~80 MB Vuln-DB nicht jedesmal neu
 # heruntergeladen wird.
 RUN useradd -r -u 10001 -m -s /sbin/nologin sbom \
- && mkdir -p /scratch /app /var/cache/grype \
- && chown -R sbom:sbom /scratch /app /var/cache/grype
+ && mkdir -p /scratch /app /var/cache/grype /var/lib/clamav /var/log/clamav \
+ && chown -R sbom:sbom /scratch /app /var/cache/grype /var/lib/clamav /var/log/clamav
 
 WORKDIR /app
 COPY --from=node-build --chown=sbom:sbom /app/node_modules ./node_modules

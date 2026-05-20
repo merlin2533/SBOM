@@ -5,6 +5,7 @@ import { loadConfig } from './config';
 import { createApp } from './app';
 import { loadKev } from './kev';
 import { loadEpss } from './epss';
+import { scheduleFreshclam } from './clamav-freshclam';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -70,6 +71,9 @@ async function main(): Promise<void> {
   // Test-Suite (die createApp() direkt nutzt) keine Netz-Downloads auslöst.
   loadKev().catch(() => {});
   loadEpss().catch(() => {});
+
+  // Wöchentlichen freshclam-Refresh der ClamAV-Signatur-DB planen.
+  scheduleFreshclam(logger).catch(() => {});
 
   let shuttingDown = false;
 
