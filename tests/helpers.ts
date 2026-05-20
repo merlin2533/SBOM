@@ -100,6 +100,7 @@ export function makeApp(overrides: Partial<ServerConfig> = {}) {
     sandboxMode: 'none',
     binaryScanMaxBytes: 2 * 1024 * 1024 * 1024,
     secretScanMaxBytes: 1 * 1024 * 1024 * 1024,
+    clamavScanMaxBytes: 2 * 1024 * 1024 * 1024,
     ...overrides,
   };
   return createApp(config);

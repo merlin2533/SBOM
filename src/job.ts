@@ -22,6 +22,8 @@ import { buildCbom } from './cbom';
 import type { CbomResult } from './cbom';
 import { runBinaryScan } from './binary-scan';
 import type { BinaryScanResult } from './binary-scan';
+import { runClamScan } from './clamav-scan';
+import type { ClamScanResult } from './clamav-scan';
 import { writeAuditEntry } from './audit-log';
 import { hashFile, lookup, register } from './hash-cache';
 import { writeOpenVex } from './openvex';
@@ -325,6 +327,7 @@ export class JobRunner {
       // Rohartefakt-Scans (benötigen Upload + stage-Verzeichnis): vor dem Löschen ausführen.
       let binaryScanResult: BinaryScanResult | null = null;
       let secretScanResult: SecretScanResult | null = null;
+      let clamScanResult: ClamScanResult | null = null;
 
       if (job.state === 'done') {
         // Binär-Scan auf das Upload-Artefakt
@@ -343,6 +346,25 @@ export class JobRunner {
           this.sessions.pushLog(sess, job, 'stdout', msg);
         } catch (e) {
           this.logger.warn({ jobId: job.id, err: e }, 'binary-scan: Fehler (nicht-fatal)');
+        }
+
+        // Malware-Scan (ClamAV) auf das Upload-Artefakt — clamscan als
+        // One-Shot, kein dauerhafter Daemon.
+        try {
+          clamScanResult = await runClamScan({
+            target: job.uploadPath,
+            outDir: job.outDir,
+            inputName: job.inputName,
+            maxBytes: this.config.clamavScanMaxBytes,
+            logger: this.logger,
+            jobId: job.id,
+          });
+          const msg = clamScanResult.ran
+            ? `[clamav-scan] ${clamScanResult.infectedCount} Malware-Treffer`
+            : '[clamav-scan] übersprungen';
+          this.sessions.pushLog(sess, job, 'stdout', msg);
+        } catch (e) {
+          this.logger.warn({ jobId: job.id, err: e }, 'clamav-scan: Fehler (nicht-fatal)');
         }
 
         // Secret-Scan: bevorzugt das stage-Verzeichnis aus pre-extract
@@ -632,6 +654,7 @@ export class JobRunner {
               secrets: secretScanResult,
               cbom: cbomResult,
               binary: binaryScanResult,
+              clamav: clamScanResult,
             };
             const summaryRes = await buildSummaryReport({
               cdxJsonPath: cdxPath,

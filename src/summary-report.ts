@@ -18,12 +18,14 @@ import type { ExtraScanResult } from './extra-scanners';
 import type { SecretScanResult } from './secret-scan';
 import type { CbomResult } from './cbom';
 import type { BinaryScanResult } from './binary-scan';
+import type { ClamScanResult } from './clamav-scan';
 
 export interface SummaryExtras {
   extraScan: ExtraScanResult | null;
   secrets: SecretScanResult | null;
   cbom: CbomResult | null;
   binary: BinaryScanResult | null;
+  clamav: ClamScanResult | null;
 }
 
 export interface SummaryOpts {
@@ -124,6 +126,7 @@ interface RatingInput {
   // Scanner penalties
   secretCount?: number;
   maliciousCount?: number;
+  clamavInfectedCount?: number;
 }
 
 interface RatingResult {
@@ -237,30 +240,39 @@ function computeRating(r: RatingInput): RatingResult {
     reasons.push(`${r.maliciousCount} potenziell bösartige${r.maliciousCount === 1 ? 's Paket' : ' Pakete'} erkannt (−${maliciousPenalty})`);
   }
 
+  // ClamAV-Malware-Abzüge — bestätigte Schadsoftware ist der schwerste Befund.
+  if (r.clamavInfectedCount && r.clamavInfectedCount > 0) {
+    const clamavPenalty = Math.min(r.clamavInfectedCount * 50, 100);
+    score -= clamavPenalty;
+    reasons.push(`${r.clamavInfectedCount} Malware-Treffer von ClamAV (−${clamavPenalty})`);
+  }
+
   score = Math.max(0, Math.min(100, Math.round(score)));
 
   const malCount = r.maliciousCount ?? 0;
+  const clamavCount = r.clamavInfectedCount ?? 0;
 
-  // Note + Farbe ableiten. Bei bösartigen Paketen: maximal Note D.
+  // Note + Farbe ableiten. Bösartige Pakete: maximal Note D.
+  // ClamAV-Malware-Treffer: Note F.
   let grade: string, label: string, explain: string;
   let color: { fg: string; bg: string; border: string };
-  if (score >= 95 && malCount === 0) {
+  if (score >= 95 && malCount === 0 && clamavCount === 0) {
     grade = 'A+'; label = 'Ausgezeichnet';
     explain = 'Saubere Lieferung mit minimaler Restrisiko-Fläche.';
     color = { fg: '#14532d', bg: '#dcfce7', border: '#15803d' };
-  } else if (score >= 85 && malCount === 0) {
+  } else if (score >= 85 && malCount === 0 && clamavCount === 0) {
     grade = 'A';  label = 'Sehr gut';
     explain = 'Lieferbar — kleinere Hinweise prüfen.';
     color = { fg: '#365314', bg: '#ecfccb', border: '#65a30d' };
-  } else if (score >= 75 && malCount === 0) {
+  } else if (score >= 75 && malCount === 0 && clamavCount === 0) {
     grade = 'B';  label = 'Gut';
     explain = 'Akzeptabel, einige Befunde sollten gesichtet werden.';
     color = { fg: '#854d0e', bg: '#fef9c3', border: '#ca8a04' };
-  } else if (score >= 65 && malCount === 0) {
+  } else if (score >= 65 && malCount === 0 && clamavCount === 0) {
     grade = 'C';  label = 'Mittelmäßig';
     explain = 'Mit Vorbehalt freigebbar — nennenswerte Befunde adressieren.';
     color = { fg: '#92400e', bg: '#fef3c7', border: '#d97706' };
-  } else if (score >= 50) {
+  } else if (score >= 50 && clamavCount === 0) {
     grade = 'D';  label = 'Bedenklich';
     explain = malCount > 0
       ? 'Bösartige Pakete erkannt — Lieferung nicht einsetzen ohne Untersuchung.'
@@ -268,7 +280,9 @@ function computeRating(r: RatingInput): RatingResult {
     color = { fg: '#9a3412', bg: '#ffedd5', border: '#ea580c' };
   } else {
     grade = 'F';  label = 'Nicht freigebbar';
-    explain = 'Schwerwiegende Befunde — Lieferung nicht ohne Eingriff einsetzen.';
+    explain = clamavCount > 0
+      ? 'Malware im Artefakt erkannt (ClamAV) — Lieferung keinesfalls einsetzen.'
+      : 'Schwerwiegende Befunde — Lieferung nicht ohne Eingriff einsetzen.';
     color = { fg: '#7f1d1d', bg: '#fee2e2', border: '#b91c1c' };
   }
 
@@ -522,6 +536,42 @@ function buildExtraSections(
   if (!extras) return '';
   const sections: string[] = [];
 
+  // Malware-Treffer (ClamAV) — schwerster Befundtyp, daher zuoberst.
+  if (extras.clamav?.ran) {
+    const clam = extras.clamav;
+    if (clam.findings.length > 0) {
+      const rows = clam.findings.map((f) => `
+        <tr>
+          <td class="mono small">${escapeHtml(f.file)}</td>
+          <td class="small"><strong>${escapeHtml(f.signature)}</strong></td>
+        </tr>`).join('');
+      sections.push(`
+        <div class="section-title">Malware-Scan (ClamAV)</div>
+        <div class="warn-banner">🦠 ${clam.findings.length} Malware-Treffer — Artefakt NICHT einsetzen, umgehend isolieren!</div>
+        <details class="group" open>
+          <summary>
+            <span class="caret" aria-hidden="true">▸</span>
+            <span class="group-name">ClamAV-Befunde</span>
+            <span class="group-count">${clam.findings.length}</span>
+          </summary>
+          <div class="group-body">
+            <div class="filter-bar">
+              <input type="search" class="tbl-filter" placeholder="Filtern …" onclick="event.stopPropagation()" data-total="${clam.findings.length}" />
+              <span class="filter-count"></span>
+            </div>
+            <table>
+              <thead><tr><th>Datei / Eintrag</th><th>Signatur</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </details>`);
+    } else {
+      sections.push(`
+        <div class="section-title">Malware-Scan (ClamAV)</div>
+        <div class="ok-banner">✓ Keine Malware gefunden (ClamAV).</div>`);
+    }
+  }
+
   // 1. Bösartige Pakete
   const malPkgs = extras.extraScan?.maliciousPackages ?? [];
   if (malPkgs.length > 0) {
@@ -742,6 +792,7 @@ function buildFooterScannerList(extras: SummaryExtras | null): string {
   if (extras?.extraScan?.ranOsv) parts.push('osv-scanner');
   if (extras?.secrets?.ran) parts.push('gitleaks');
   if (extras?.binary?.ran) parts.push('cve-bin-tool');
+  if (extras?.clamav?.ran) parts.push('clamav');
   if (parts.length === 0) return '';
   return ` · Weitere Scanner: ${escapeHtml(parts.join(', '))}`;
 }
@@ -862,6 +913,7 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
   };
   const secretCount = opts.extras?.secrets?.count ?? 0;
   const maliciousCount = opts.extras?.extraScan?.maliciousPackages?.length ?? 0;
+  const clamavInfectedCount = opts.extras?.clamav?.infectedCount ?? 0;
 
   const rating = computeRating({
     componentCount: comps.length,
@@ -878,6 +930,7 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
     policyFailed: policyResult ? !policyResult.passed : false,
     secretCount,
     maliciousCount,
+    clamavInfectedCount,
   });
 
   const licenseChips = LICENSE_CATEGORY_ORDER.map((cat) => {

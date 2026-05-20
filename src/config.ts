@@ -42,13 +42,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       ? (sandboxModeRaw as SandboxMode)
       : 'auto';
 
-  // Größen-Limits für Binär- und Secret-Scan
+  // Größen-Limits für Binär-, Secret- und Malware-Scan
   const binaryScanMaxBytes = parseInt(
     env['BINARY_SCAN_MAX_BYTES'] ?? String(2 * 1024 * 1024 * 1024),
     10
   );
   const secretScanMaxBytes = parseInt(
     env['SECRET_SCAN_MAX_BYTES'] ?? String(1 * 1024 * 1024 * 1024),
+    10
+  );
+  const clamavScanMaxBytes = parseInt(
+    env['CLAMAV_SCAN_MAX_BYTES'] ?? String(2 * 1024 * 1024 * 1024),
     10
   );
 
@@ -71,5 +75,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     sandboxMode,
     binaryScanMaxBytes,
     secretScanMaxBytes,
+    clamavScanMaxBytes,
   };
 }
