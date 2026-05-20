@@ -332,11 +332,14 @@ function kevBadge(id: string | undefined | null, kevMap: Map<string, KevDetails>
   const tooltip = [
     entry.vendor ? `Vendor: ${entry.vendor}` : '',
     entry.product ? `Product: ${entry.product}` : '',
-    entry.dateAdded ? `Added: ${entry.dateAdded}` : '',
-    entry.dueDate ? `Due: ${entry.dueDate}` : '',
+    entry.dateAdded ? `In KEV-Katalog aufgenommen: ${entry.dateAdded}` : '',
+    entry.dueDate ? `Behebung fällig bis: ${entry.dueDate}` : '',
     entry.ransomwareUse ? `Ransomware: ${entry.ransomwareUse}` : '',
   ].filter(Boolean).join(' | ');
-  return `<span class="kev-badge" title="${escapeHtml(tooltip)}">🚨 KEV</span>`;
+  // dateAdded direkt am Badge anzeigen (nicht nur im Tooltip): das Datum,
+  // an dem CISA die Schwachstelle als aktiv ausgenutzt gelistet hat.
+  const dateLabel = entry.dateAdded ? ` · seit ${escapeHtml(entry.dateAdded)}` : '';
+  return `<span class="kev-badge" title="${escapeHtml(tooltip)}">🚨 KEV${dateLabel}</span>`;
 }
 
 function epssChip(id: string | undefined | null, epssMap: Map<string, import('./epss').EpssScore>): string {
