@@ -50,7 +50,8 @@ und Weiterverschicken.
   CVEs in eingebetteten kompilierten Bibliotheken direkt im Artefakt
 - **Malware-Scan** via [ClamAV](https://www.clamav.net/): `clamscan` läuft
   als One-Shot pro Upload (kein dauerhafter Daemon) gegen das rohe Artefakt;
-  ein Treffer kappt die Bewertung auf Note F
+  ein Treffer kappt die Bewertung auf Note F. Die Signatur-DB wird
+  wöchentlich per `freshclam` aktualisiert (One-Shot, kein Daemon)
 - **VEX-Skelett** ([CycloneDX VEX 1.6](https://github.com/CycloneDX/bom-examples/tree/master/VEX))
   jetzt automatisch vorausgefüllt: KEV-Treffer als `exploitable`, Fixes
   als `in_triage` mit Update-Response — noch menschliche Prüfung nötig
@@ -120,9 +121,9 @@ docker compose pull && docker compose up -d
 ```
 
 Das Image bringt alles mit: `extract-sbom`, `syft`, `grype`, `trivy`,
-`osv-scanner`, `gitleaks`, `cve-bin-tool`, `clamav` (inkl. Signatur-DB
-zum Build-Zeitpunkt), `innoextract`, `p7zip-full`, `unshield`, `tini`.
-Du brauchst nur einen Docker-Host.
+`osv-scanner`, `gitleaks`, `cve-bin-tool`, `clamav` (Signatur-DB initial
+gebacken, danach wöchentlich per `freshclam` aktualisiert), `innoextract`,
+`p7zip-full`, `unshield`, `tini`. Du brauchst nur einen Docker-Host.
 
 Die compose-Datei legt automatisch ein **persistentes Volume**
 `grype-cache` für die Vuln-DB an, damit sie Container-Restarts
