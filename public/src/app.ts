@@ -506,7 +506,10 @@ function updateJobCard(li: HTMLLIElement, job: JobSnapshot): void {
   const renderDlItem = (f: typeof job.outputs[number], opts: { primary?: boolean } = {}): string => {
     const dl = withSid(`/api/download/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`);
     const view = withSid(`/api/view/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}`);
-    const viewDl = withSid(`/api/view/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}${SID ? '&' : '?'}download=1`);
+    // download=1 muss als Query-Parameter ankommen. withSid hängt sid an und
+    // wählt den Separator selbst — daher hier IMMER mit '?' beginnen, sonst
+    // landet '&download=1' im Pfad (→ 404) statt im Query-String.
+    const viewDl = withSid(`/api/view/${encodeURIComponent(job.id)}/${encodeURIComponent(f.name)}?download=1`);
     const viewable = isViewable(f.name);
     const viewBtn = viewable
       ? `<button type="button" class="dl-btn ${opts.primary ? 'primary' : ''} js-view"
