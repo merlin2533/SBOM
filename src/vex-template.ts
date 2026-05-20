@@ -17,7 +17,7 @@
 import fsp from 'fs/promises';
 import path from 'path';
 import type pino from 'pino';
-import type { VulnEnrichment } from './enrichment';
+import { isKev } from './kev';
 
 interface GrypeVulnerability {
   id?: string;
@@ -87,9 +87,8 @@ export async function writeVexSkeleton(opts: {
   inputName: string;
   logger: pino.Logger;
   jobId: string;
-  enrichment?: Map<string, VulnEnrichment>;
 }): Promise<{ vexPath: string | null; count: number }> {
-  const { grypeJsonPath, outDir, inputName, logger, jobId, enrichment } = opts;
+  const { grypeJsonPath, outDir, inputName, logger, jobId } = opts;
 
   let data: GrypeOutput;
   try {
@@ -115,8 +114,7 @@ export async function writeVexSkeleton(opts: {
     let response: string[];
     let detail: string;
 
-    const enr = enrichment?.get(cveId);
-    if (enr?.kev) {
+    if (isKev(cveId)) {
       // KEV-Eintrag: aktiv ausgenutzt → sofortiger Handlungsbedarf
       state = 'exploitable';
       response = ['update'];

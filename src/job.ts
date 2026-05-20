@@ -12,7 +12,16 @@ import { shredUnlink } from './shred';
 import { preExtract, cleanupPreExtract, PreExtractResult } from './pre-extract';
 import { runVulnReport } from './vuln-report';
 import { buildSummaryReport } from './summary-report';
+import type { SummaryExtras } from './summary-report';
 import { writeVexSkeleton } from './vex-template';
+import { runExtraScanners } from './extra-scanners';
+import type { ExtraScanResult } from './extra-scanners';
+import { runSecretScan } from './secret-scan';
+import type { SecretScanResult } from './secret-scan';
+import { buildCbom } from './cbom';
+import type { CbomResult } from './cbom';
+import { runBinaryScan } from './binary-scan';
+import type { BinaryScanResult } from './binary-scan';
 import { writeAuditEntry } from './audit-log';
 import { hashFile, lookup, register } from './hash-cache';
 import { writeOpenVex } from './openvex';
@@ -313,6 +322,90 @@ export class JobRunner {
         sess.outputWatcher = null;
       }
 
+      // Rohartefakt-Scans (benötigen Upload + stage-Verzeichnis): vor dem Löschen ausführen.
+      let binaryScanResult: BinaryScanResult | null = null;
+      let secretScanResult: SecretScanResult | null = null;
+
+      if (job.state === 'done') {
+        // Binär-Scan auf das Upload-Artefakt
+        try {
+          binaryScanResult = await runBinaryScan({
+            target: job.uploadPath,
+            outDir: job.outDir,
+            inputName: job.inputName,
+            maxBytes: this.config.binaryScanMaxBytes,
+            logger: this.logger,
+            jobId: job.id,
+          });
+          const msg = binaryScanResult.ran
+            ? `[binary-scan] ${binaryScanResult.findings.length} CVEs in Binärdateien`
+            : '[binary-scan] übersprungen';
+          this.sessions.pushLog(sess, job, 'stdout', msg);
+        } catch (e) {
+          this.logger.warn({ jobId: job.id, err: e }, 'binary-scan: Fehler (nicht-fatal)');
+        }
+
+        // Secret-Scan: bevorzugt das stage-Verzeichnis aus pre-extract
+        let secretScanDir: string | null = null;
+        let secretTmpDir: string | null = null;
+        if (pre?.didPreExtract) {
+          // stage-Verzeichnis aus dem pre-extract verwenden
+          secretScanDir = path.join(path.dirname(pre.inputPath), 'stage');
+        } else {
+          // Versuchen den Upload zu entpacken wenn klein genug und 7z verfügbar
+          const uploadSize = job.inputSize;
+          if (uploadSize <= this.config.secretScanMaxBytes) {
+            const has7z = await new Promise<boolean>((resolve) => {
+              const c = spawn('sh', ['-c', 'command -v 7z >/dev/null 2>&1'], { stdio: 'ignore' });
+              c.on('exit', (ec) => resolve(ec === 0));
+              c.on('error', () => resolve(false));
+            });
+            if (has7z) {
+              secretTmpDir = path.join(sess.dir, 'jobs', job.id, 'secret-scan');
+              try {
+                await fsp.mkdir(secretTmpDir, { recursive: true, mode: 0o700 });
+                await new Promise<void>((resolve) => {
+                  const c = spawn('7z', ['x', '-y', `-o${secretTmpDir}`, job.uploadPath], {
+                    stdio: ['ignore', 'ignore', 'ignore'],
+                  });
+                  const t = setTimeout(() => { try { c.kill('SIGKILL'); } catch (_) {} }, 120_000);
+                  c.on('exit', () => { clearTimeout(t); resolve(); });
+                  c.on('error', () => { clearTimeout(t); resolve(); });
+                });
+                secretScanDir = secretTmpDir;
+              } catch (_) {
+                secretScanDir = null;
+              }
+            }
+          }
+        }
+
+        if (secretScanDir) {
+          try {
+            secretScanResult = await runSecretScan({
+              scanDir: secretScanDir,
+              outDir: job.outDir,
+              inputName: job.inputName,
+              logger: this.logger,
+              jobId: job.id,
+            });
+            const msg = secretScanResult.ran
+              ? `[secret-scan] ${secretScanResult.count} Secret-Funde`
+              : '[secret-scan] übersprungen';
+            this.sessions.pushLog(sess, job, 'stdout', msg);
+          } catch (e) {
+            this.logger.warn({ jobId: job.id, err: e }, 'secret-scan: Fehler (nicht-fatal)');
+          }
+        } else {
+          this.sessions.pushLog(sess, job, 'stdout', '[secret-scan] übersprungen');
+        }
+
+        // 7z-tmpDir aufräumen (falls wir es angelegt haben)
+        if (secretTmpDir) {
+          await fsp.rm(secretTmpDir, { recursive: true, force: true }).catch(() => {});
+        }
+      }
+
       // Shred password file and remove the upload artifact immediately.
       await shredUnlink(job.passwordFile);
       job.passwordFile = null;
@@ -471,9 +564,67 @@ export class JobRunner {
             this.sessions.pushLog(sess, job, 'stdout',
               `[policy] ${policyResult.passed ? 'bestanden' : 'NICHT bestanden'} (${policyResult.results.filter((r) => r.triggered).length} Regeln ausgelöst)`);
 
+            // Zusätzliche Scanner: trivy + osv-scanner
+            let extraScanResult: ExtraScanResult | null = null;
+            try {
+              extraScanResult = await runExtraScanners({
+                cdxJsonPath: cdxPath,
+                outDir: job.outDir,
+                inputName: job.inputName,
+                logger: this.logger,
+                jobId: job.id,
+              });
+              const xSummary = [
+                extraScanResult.ranTrivy ? `trivy: ${extraScanResult.counts.Critical}C/${extraScanResult.counts.High}H` : '',
+                extraScanResult.ranOsv ? `osv: ${extraScanResult.findings.length} Befunde` : '',
+              ].filter(Boolean).join(', ');
+              this.sessions.pushLog(
+                sess,
+                job,
+                'stdout',
+                `[extra-scan] ${xSummary || 'keine zusätzlichen Scanner verfügbar'}`
+              );
+              if (extraScanResult.maliciousPackages.length > 0) {
+                this.sessions.pushLog(
+                  sess,
+                  job,
+                  'stdout',
+                  `[extra-scan] ⚠ ${extraScanResult.maliciousPackages.length} bösartige Pakete erkannt!`
+                );
+              }
+            } catch (e) {
+              this.logger.warn({ jobId: job.id, err: e }, 'extra-scan: Fehler (nicht-fatal)');
+            }
+
+            // CBOM aus CycloneDX-Komponenten ableiten
+            let cbomResult: CbomResult | null = null;
+            try {
+              cbomResult = await buildCbom({
+                cdxJsonPath: cdxPath,
+                outDir: job.outDir,
+                inputName: job.inputName,
+                logger: this.logger,
+                jobId: job.id,
+              });
+              this.sessions.pushLog(
+                sess,
+                job,
+                'stdout',
+                `[cbom] ${cbomResult.components.length} Krypto-Komponenten${cbomResult.weakCount > 0 ? ` · ${cbomResult.weakCount} schwach` : ''}`
+              );
+            } catch (e) {
+              this.logger.warn({ jobId: job.id, err: e }, 'cbom: Fehler (nicht-fatal)');
+            }
+
             // 2. Kombinierter Gesamtübersicht-Bericht (Komponenten + CVEs +
-            //    Lizenzen + Restrisiken in einem HTML).
+            //    Lizenzen + Restrisiken + Extra-Sektionen in einem HTML).
             const reportMd = entries.find((n) => /\.report\.md$/i.test(n));
+            const extrasForSummary: SummaryExtras = {
+              extraScan: extraScanResult,
+              secrets: secretScanResult,
+              cbom: cbomResult,
+              binary: binaryScanResult,
+            };
             const summaryRes = await buildSummaryReport({
               cdxJsonPath: cdxPath,
               grypeJsonPath: vr.ranGrype ? vr.jsonPath : null,
@@ -487,6 +638,7 @@ export class JobRunner {
               eolHits,
               typosquatHits,
               policyResult,
+              extras: extrasForSummary,
             });
             if (summaryRes.htmlPath) {
               this.sessions.pushLog(

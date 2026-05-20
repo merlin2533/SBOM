@@ -264,54 +264,6 @@ describe('redactSecret', () => {
   });
 });
 
-// ─── Enrichment-Tests ─────────────────────────────────────────────────────────
-
-describe('enrichVulnerabilities', () => {
-  it('gibt leeres Ergebnis zurück wenn offline=true', async () => {
-    const { enrichVulnerabilities } = await import('../src/enrichment');
-
-    const result = await enrichVulnerabilities(['CVE-2023-44487', 'CVE-2021-44228'], {
-      logger,
-      jobId: JOB_ID,
-      offline: true,
-    });
-
-    expect(result.byId.size).toBe(0);
-    expect(result.kevAvailable).toBe(false);
-    expect(result.epssAvailable).toBe(false);
-  });
-
-  it('gibt leeres Ergebnis zurück wenn cveIds leer', async () => {
-    const { enrichVulnerabilities } = await import('../src/enrichment');
-
-    const result = await enrichVulnerabilities([], {
-      logger,
-      jobId: JOB_ID,
-    });
-
-    expect(result.byId.size).toBe(0);
-    expect(result.kevAvailable).toBe(false);
-    expect(result.epssAvailable).toBe(false);
-  });
-
-  it('wirft nie — gibt immer EnrichmentResult zurück', async () => {
-    const { enrichVulnerabilities } = await import('../src/enrichment');
-
-    // Selbst mit offline=true muss es funktionieren
-    const result = await enrichVulnerabilities(['CVE-2023-12345'], {
-      logger,
-      jobId: JOB_ID,
-      offline: true,
-      cacheDir: join(tmpDir, 'enrichment-cache'),
-    });
-
-    expect(result).toHaveProperty('byId');
-    expect(result).toHaveProperty('kevAvailable');
-    expect(result).toHaveProperty('epssAvailable');
-    expect(result.byId).toBeInstanceOf(Map);
-  });
-});
-
 // ─── Extra-Scanner-Tests ──────────────────────────────────────────────────────
 
 describe('runExtraScanners', () => {

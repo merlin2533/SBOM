@@ -77,8 +77,8 @@ und Weiterverschicken.
 | `<name>.report.md` | Markdown | Audit-Report (Extraktor-Log, Restrisiken) |
 | `<name>.spdx.json` | SPDX JSON | dieselbe SBOM im SPDX-Format |
 | `<name>.vulnerabilities.json` | grype JSON | CVE-Treffer in Rohform |
-| `<name>.vulnerabilities.csv` | CSV | CVE-Liste mit EPSS/KEV-Spalten für Excel/Auditoren |
-| `<name>.vulnerabilities.html` | Standalone HTML | farbig kategorisiert, KEV-Badge, EPSS-Spalte |
+| `<name>.vulnerabilities.csv` | CSV | CVE-Liste für Excel/Auditoren |
+| `<name>.vulnerabilities.html` | Standalone HTML | farbig kategorisiert, aufklappbar nach Severity |
 | `<name>.trivy.json` | trivy JSON | CVE-Treffer von trivy (zweiter Scanner) |
 | `<name>.osv.json` | osv-scanner JSON | CVE- und Malware-Treffer (osv-scanner) |
 | `<name>.secrets.json` | JSON | Secret-Funde (gitleaks) — nur maskierte Vorschau |
@@ -156,8 +156,6 @@ beschreibbar, Frontend-Build da).
 | `TRUST_PROXY` | `0` | Auf `1` setzen wenn hinter TLS-Proxy (Caddy/nginx/Traefik). Macht Cookie `Secure` und respektiert `X-Forwarded-*` |
 | `LOG_LEVEL` | `info` | pino-Level |
 | `LOG_PRETTY` | _(auto)_ | Forciert pretty-stdout |
-| `ENRICHMENT_OFFLINE` | `0` | Auf `1` setzen um KEV/EPSS-Netzwerkabrufe zu deaktivieren |
-| `ENRICHMENT_CACHE_DIR` | `$TMPDIR/sbom-enrichment` | Cache-Verzeichnis für den KEV-JSON-Download |
 | `BINARY_SCAN_MAX_BYTES` | `2147483648` | Max. Artefaktgröße für cve-bin-tool (2 GiB) |
 | `SECRET_SCAN_MAX_BYTES` | `1073741824` | Max. Upload-Größe zum Entpacken für gitleaks (1 GiB) |
 
@@ -233,7 +231,7 @@ public/                  index.html, styles.css, vendorter tus-Client
 scripts/install.sh       Setup-Skript (Submodule + Go-Build + npm + Vendor)
 scripts/preflight.sh     Bereitschafts-Prüfung
 vendor/extract-sbom/     Git-Submodule auf TomTonic/extract-sbom
-tests/                   vitest-Suite (88 Tests)
+tests/                   vitest-Suite (85 Tests)
 .github/workflows/       Docker-Build- + Publish-Pipeline
 ```
 
@@ -245,7 +243,7 @@ npm test            # vitest
 npm run typecheck   # tsc --noEmit für Server + Frontend
 ```
 
-88 Tests decken Security-Middlewares (CSRF, Basic-Auth, Rate-Limit,
+85 Tests decken Security-Middlewares (CSRF, Basic-Auth, Rate-Limit,
 Security-Headers), Session-Lebenszyklus, Passwort-Transport (env vs.
 Datei, Shred-on-exit), Step-Detector, Sandbox-Builder, Graceful-Drain,
 das Job-Lifecycle sowie die Security-Scanner-Module (CBOM-Erkennung,
