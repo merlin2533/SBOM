@@ -1373,16 +1373,26 @@ footer p { margin: 0 auto 1rem; max-width: 720px; }
   .progress-pct { width: auto; text-align: left; }
 
   /* Modal-Viewer: full viewport auf Mobile */
-  .viewer-modal { padding: 0; }
+  .viewer-modal {
+    padding: 0;
+    /* Box oben verankern statt zentrieren — sonst verschiebt die kleinere
+       dvh-Box gegenüber dem lvh-Overlay den Inhalt unter die Statusleiste. */
+    align-items: stretch;
+  }
   .viewer-modal-box {
-    height: 100vh;
+    height: 100vh;            /* Fallback für Browser ohne dvh-Unterstützung */
+    height: 100dvh;           /* dynamische Viewport-Höhe — Inhalt bleibt sichtbar,
+                                 nicht hinter der ein-/ausfahrenden Browserleiste */
     max-height: 100vh;
+    max-height: 100dvh;
     border-radius: 0;
     border-left: 0;
     border-right: 0;
   }
   .viewer-modal-head {
     padding: .7rem .85rem;
+    /* Notch / Statusleiste: Kopf nicht unter die Aussparung schieben. */
+    padding-top: calc(.7rem + env(safe-area-inset-top));
     flex-direction: column;
     align-items: flex-start;
     gap: .55rem;
