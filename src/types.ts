@@ -25,6 +25,10 @@ export interface ServerConfig {
   logLevel: string;
   logPretty: boolean;
   sandboxMode: SandboxMode;
+  // Binär-Scan-Limit
+  binaryScanMaxBytes: number;
+  // Secret-Scan-Limit
+  secretScanMaxBytes: number;
 }
 
 export interface LogEntry {

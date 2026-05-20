@@ -17,16 +17,20 @@
 import fsp from 'fs/promises';
 import path from 'path';
 import type pino from 'pino';
+import { isKev } from './kev';
 
 interface GrypeVulnerability {
   id?: string;
   severity?: string;
   urls?: string[];
   dataSource?: string;
+  fix?: { versions?: string[]; state?: string };
 }
 
 interface GrypeArtifact {
   purl?: string;
+  name?: string;
+  version?: string;
 }
 
 interface GrypeMatch {
@@ -103,24 +107,49 @@ export async function writeVexSkeleton(opts: {
     const a = m.artifact ?? {};
     const urls = v.urls ?? [];
     const sourceUrl = urls[0] ?? v.dataSource ?? '';
+    const cveId = v.id ?? 'UNKNOWN';
+
+    // Automatische Vorausfüllung der Analyse basierend auf Anreicherungsdaten
+    let state: string;
+    let response: string[];
+    let detail: string;
+
+    if (isKev(cveId)) {
+      // KEV-Eintrag: aktiv ausgenutzt → sofortiger Handlungsbedarf
+      state = 'exploitable';
+      response = ['update'];
+      detail = 'In CISA KEV gelistet — aktiv ausgenutzt; umgehend patchen.';
+    } else if ((v.fix?.versions?.length ?? 0) > 0) {
+      // Fix verfügbar
+      state = 'in_triage';
+      response = ['update'];
+      detail = `Empfohlenes Update: ${(v.fix?.versions ?? []).join(', ')}. Erreichbarkeit im eigenen Kontext prüfen.`;
+    } else {
+      // Kein Fix bekannt
+      state = 'in_triage';
+      response = [];
+      detail = 'Kein Fix verfügbar — Workaround/Mitigation prüfen.';
+    }
+
     return {
-      id: v.id ?? 'UNKNOWN',
+      id: cveId,
       source: { name: sourceName(urls), url: sourceUrl },
       ratings: [{ severity: (v.severity ?? 'unknown').toLowerCase() }],
       affects: a.purl ? [{ ref: a.purl }] : [],
       analysis: {
-        state: 'in_triage',
+        state,
         justification: '',
-        response: [],
-        detail: '',
+        response,
+        detail,
       },
     };
   });
 
   const vexDoc: VexDocument = {
     _comment: [
-      'CycloneDX VEX 1.6 — automatisch generiertes Skelett.',
-      'Bitte jeden Eintrag unter "vulnerabilities[].analysis" befüllen:',
+      'CycloneDX VEX 1.6 — automatisch vorausgefülltes Skelett (noch menschliche Prüfung erforderlich).',
+      'KEV-Treffer wurden als "exploitable" markiert, Einträge mit verfügbarem Fix als "in_triage" + Update-Response.',
+      'Bitte jeden Eintrag unter "vulnerabilities[].analysis" manuell verifizieren und ggf. korrigieren:',
       '  state: in_triage | exploitable | in_scope | not_affected | fixed',
       '  justification: code_not_reachable | vulnerable_code_not_in_execute_path | …',
       '  response: [] | ["will_not_fix"] | ["update"] | …',

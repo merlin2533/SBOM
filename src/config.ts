@@ -42,6 +42,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       ? (sandboxModeRaw as SandboxMode)
       : 'auto';
 
+  // Größen-Limits für Binär- und Secret-Scan
+  const binaryScanMaxBytes = parseInt(
+    env['BINARY_SCAN_MAX_BYTES'] ?? String(2 * 1024 * 1024 * 1024),
+    10
+  );
+  const secretScanMaxBytes = parseInt(
+    env['SECRET_SCAN_MAX_BYTES'] ?? String(1 * 1024 * 1024 * 1024),
+    10
+  );
+
   return {
     port,
     host,
@@ -59,5 +69,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     logLevel,
     logPretty,
     sandboxMode,
+    binaryScanMaxBytes,
+    secretScanMaxBytes,
   };
 }

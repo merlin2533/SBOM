@@ -14,6 +14,17 @@ import type { EpssScore } from './epss';
 import type { EolInfo } from './eol';
 import type { TyposquatHit } from './typosquat';
 import type { PolicyResult } from './policy';
+import type { ExtraScanResult } from './extra-scanners';
+import type { SecretScanResult } from './secret-scan';
+import type { CbomResult } from './cbom';
+import type { BinaryScanResult } from './binary-scan';
+
+export interface SummaryExtras {
+  extraScan: ExtraScanResult | null;
+  secrets: SecretScanResult | null;
+  cbom: CbomResult | null;
+  binary: BinaryScanResult | null;
+}
 
 export interface SummaryOpts {
   cdxJsonPath: string;
@@ -29,6 +40,7 @@ export interface SummaryOpts {
   eolHits?: Array<{ name: string; version: string; info: EolInfo }>;
   typosquatHits?: TyposquatHit[];
   policyResult?: PolicyResult | null;
+  extras?: SummaryExtras;
 }
 
 export interface SummaryResult {
@@ -109,6 +121,9 @@ interface RatingInput {
   eolCount?: number;
   typosquatCount?: number;
   policyFailed?: boolean;
+  // Scanner penalties
+  secretCount?: number;
+  maliciousCount?: number;
 }
 
 interface RatingResult {
@@ -208,30 +223,48 @@ function computeRating(r: RatingInput): RatingResult {
     reasons.push('Policy verletzt (−20)');
   }
 
+  // Secret-Abzüge
+  if (r.secretCount && r.secretCount > 0) {
+    const secretPenalty = Math.min(r.secretCount * 10, 40);
+    score -= secretPenalty;
+    reasons.push(`${r.secretCount} Secret${r.secretCount === 1 ? '' : 's'} im Code gefunden (−${secretPenalty})`);
+  }
+
+  // Bösartige-Paket-Abzüge
+  if (r.maliciousCount && r.maliciousCount > 0) {
+    const maliciousPenalty = Math.min(r.maliciousCount * 40, 80);
+    score -= maliciousPenalty;
+    reasons.push(`${r.maliciousCount} potenziell bösartige${r.maliciousCount === 1 ? 's Paket' : ' Pakete'} erkannt (−${maliciousPenalty})`);
+  }
+
   score = Math.max(0, Math.min(100, Math.round(score)));
 
-  // Note + Farbe ableiten.
+  const malCount = r.maliciousCount ?? 0;
+
+  // Note + Farbe ableiten. Bei bösartigen Paketen: maximal Note D.
   let grade: string, label: string, explain: string;
   let color: { fg: string; bg: string; border: string };
-  if (score >= 95) {
+  if (score >= 95 && malCount === 0) {
     grade = 'A+'; label = 'Ausgezeichnet';
     explain = 'Saubere Lieferung mit minimaler Restrisiko-Fläche.';
     color = { fg: '#14532d', bg: '#dcfce7', border: '#15803d' };
-  } else if (score >= 85) {
+  } else if (score >= 85 && malCount === 0) {
     grade = 'A';  label = 'Sehr gut';
     explain = 'Lieferbar — kleinere Hinweise prüfen.';
     color = { fg: '#365314', bg: '#ecfccb', border: '#65a30d' };
-  } else if (score >= 75) {
+  } else if (score >= 75 && malCount === 0) {
     grade = 'B';  label = 'Gut';
     explain = 'Akzeptabel, einige Befunde sollten gesichtet werden.';
     color = { fg: '#854d0e', bg: '#fef9c3', border: '#ca8a04' };
-  } else if (score >= 65) {
+  } else if (score >= 65 && malCount === 0) {
     grade = 'C';  label = 'Mittelmäßig';
     explain = 'Mit Vorbehalt freigebbar — nennenswerte Befunde adressieren.';
     color = { fg: '#92400e', bg: '#fef3c7', border: '#d97706' };
   } else if (score >= 50) {
     grade = 'D';  label = 'Bedenklich';
-    explain = 'Vor Freigabe nachbessern oder Risiken explizit akzeptieren.';
+    explain = malCount > 0
+      ? 'Bösartige Pakete erkannt — Lieferung nicht einsetzen ohne Untersuchung.'
+      : 'Vor Freigabe nachbessern oder Risiken explizit akzeptieren.';
     color = { fg: '#9a3412', bg: '#ffedd5', border: '#ea580c' };
   } else {
     grade = 'F';  label = 'Nicht freigebbar';
@@ -455,6 +488,242 @@ function renderMarkdownLite(md: string): string {
     .replace(/<\/ul><\/p>/g, '</ul>');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Extra-Sektionen: bösartige Pakete, Secrets, CBOM, Zusatz-Scanner, Binär-Scan
+// ─────────────────────────────────────────────────────────────────────────────
+
+function buildExtraSections(
+  extras: SummaryExtras | null,
+  grypeMatches: GrypeMatch[],
+): string {
+  if (!extras) return '';
+  const sections: string[] = [];
+
+  // 1. Bösartige Pakete
+  const malPkgs = extras.extraScan?.maliciousPackages ?? [];
+  if (malPkgs.length > 0) {
+    const rows = malPkgs.map((p) => `
+      <tr>
+        <td><strong>${escapeHtml(p.pkg)}</strong></td>
+        <td class="mono small">${escapeHtml(p.version)}</td>
+        <td class="small">${escapeHtml(p.ecosystem)}</td>
+        <td class="mono small">${escapeHtml(p.id)}</td>
+        <td class="small">${escapeHtml(p.scanner)}</td>
+        <td class="small">${escapeHtml(p.summary)}</td>
+      </tr>`).join('');
+    sections.push(`
+      <div class="section-title">Bösartige Pakete</div>
+      <div class="warn-banner">⚠ ${malPkgs.length} potenziell bösartige${malPkgs.length === 1 ? 's Paket' : ' Pakete'} erkannt — dringend prüfen!</div>
+      <details class="group" open>
+        <summary>
+          <span class="caret" aria-hidden="true">▸</span>
+          <span class="group-name">Bösartige Paket-Befunde</span>
+          <span class="group-count">${malPkgs.length}</span>
+        </summary>
+        <div class="group-body">
+          <div class="filter-bar">
+            <input type="search" class="tbl-filter" placeholder="Filtern …" onclick="event.stopPropagation()" data-total="${malPkgs.length}" />
+            <span class="filter-count"></span>
+          </div>
+          <table>
+            <thead><tr><th>Paket</th><th>Version</th><th>Ökosystem</th><th>ID</th><th>Quelle</th><th>Beschreibung</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </details>`);
+  }
+
+  // 2. Secret-Funde
+  if (extras.secrets?.ran) {
+    const secrets = extras.secrets;
+    if (secrets.count > 0) {
+      const rows = secrets.findings.map((f) => `
+        <tr>
+          <td class="mono small">${escapeHtml(f.rule)}</td>
+          <td class="small">${escapeHtml(f.file)}</td>
+          <td class="mono small">${f.line}</td>
+          <td class="mono small">${escapeHtml(f.preview)}</td>
+          <td class="mono small">${f.entropy != null ? f.entropy.toFixed(2) : '—'}</td>
+        </tr>`).join('');
+      sections.push(`
+        <div class="section-title">Secret-Funde</div>
+        <div class="warn-banner">⚠ ${secrets.count} Secret${secrets.count === 1 ? '' : 's'} im Artefakt gefunden (Vorschau maskiert)</div>
+        <details class="group" open>
+          <summary>
+            <span class="caret" aria-hidden="true">▸</span>
+            <span class="group-name">Secret-Scanner-Befunde (gitleaks)</span>
+            <span class="group-count">${secrets.count}</span>
+          </summary>
+          <div class="group-body">
+            <div class="filter-bar">
+              <input type="search" class="tbl-filter" placeholder="Filtern …" onclick="event.stopPropagation()" data-total="${secrets.count}" />
+              <span class="filter-count"></span>
+            </div>
+            <table>
+              <thead><tr><th>Regel</th><th>Datei</th><th>Zeile</th><th>Vorschau (maskiert)</th><th>Entropie</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </details>`);
+    } else {
+      sections.push(`
+        <div class="section-title">Secret-Funde</div>
+        <div class="ok-banner">✓ Keine Secrets gefunden (gitleaks).</div>`);
+    }
+  }
+
+  // 3. Krypto-Inventar (CBOM)
+  if (extras.cbom && extras.cbom.components.length > 0) {
+    const cbom = extras.cbom;
+    const rows = cbom.components.map((c) => `
+      <tr>
+        <td><strong>${escapeHtml(c.name)}</strong></td>
+        <td class="mono small">${escapeHtml(c.version)}</td>
+        <td class="small">${escapeHtml(c.library)}</td>
+        <td class="small">${escapeHtml(c.role)}</td>
+        <td class="small">${c.pqcSafe ? '<span style="color:#15803d;font-weight:600">ja</span>' : '<span class="muted">nein</span>'}</td>
+        <td class="small">${c.weak ? '<span class="chip-weak">schwach</span>' : ''}</td>
+        <td class="small">${escapeHtml(c.notes)}</td>
+      </tr>`).join('');
+    const chips = [
+      cbom.weakCount > 0 ? `<span class="chip-weak">${cbom.weakCount} schwache Primitive</span>` : '',
+      cbom.pqcUnsafeCount > 0 ? `<span class="chip-pqc">${cbom.pqcUnsafeCount} nicht PQC-sicher</span>` : '',
+    ].filter(Boolean).join(' ');
+    sections.push(`
+      <div class="section-title">Krypto-Inventar (CBOM)</div>
+      ${chips ? `<div style="margin:.5rem 0">${chips}</div>` : ''}
+      <details class="group">
+        <summary>
+          <span class="caret" aria-hidden="true">▸</span>
+          <span class="group-name">Kryptografische Bibliotheken</span>
+          <span class="group-count">${cbom.components.length}</span>
+        </summary>
+        <div class="group-body">
+          <div class="filter-bar">
+            <input type="search" class="tbl-filter" placeholder="Filtern …" onclick="event.stopPropagation()" data-total="${cbom.components.length}" />
+            <span class="filter-count"></span>
+          </div>
+          <table>
+            <thead><tr><th>Komponente</th><th>Version</th><th>Bibliothek</th><th>Rolle</th><th>Quantensicher</th><th>Schwach</th><th>Hinweis</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </details>`);
+  }
+
+  // 4. Zusätzliche Scanner (trivy / osv-scanner)
+  if (extras.extraScan && (extras.extraScan.ranTrivy || extras.extraScan.ranOsv)) {
+    const extra = extras.extraScan;
+    // Deduplizieren: Befunde die grype bereits hatte (gleiche ID + Paket) ausblenden
+    const grypeIds = new Set(grypeMatches.map((m) => {
+      const v = m.vulnerability ?? {};
+      const a = m.artifact ?? {};
+      return `${v.id ?? ''}|${a.name ?? ''}`;
+    }));
+    const newFindings = extra.findings.filter((f) => !grypeIds.has(`${f.id}|${f.pkg}`));
+    const engineList = [
+      extra.ranTrivy ? 'trivy' : '',
+      extra.ranOsv ? 'osv-scanner' : '',
+    ].filter(Boolean).join(', ');
+
+    const rows = newFindings.slice(0, 200).map((f) => {
+      const c = SEVERITY_COLORS[f.severity as Severity] ?? SEVERITY_COLORS['Unknown'];
+      return `
+        <tr>
+          <td class="mono small">${escapeHtml(f.id)}</td>
+          <td><span class="sev-badge" style="background:${c.border};color:#fff;font-size:.68rem;padding:.1rem .4rem;border-radius:999px">${f.severity}</span></td>
+          <td class="small">${escapeHtml(f.pkg)}</td>
+          <td class="mono small">${escapeHtml(f.version)}</td>
+          <td class="small">${escapeHtml(f.scanner)}</td>
+          <td class="small">${f.url ? `<a href="${escapeHtml(f.url)}" target="_blank" rel="noopener">Details</a>` : '—'}</td>
+        </tr>`;
+    }).join('');
+
+    const overflowHint = newFindings.length > 200
+      ? `<tr><td colspan="6" class="muted small">… ${newFindings.length - 200} weitere ausgeblendet</td></tr>`
+      : '';
+
+    sections.push(`
+      <div class="section-title">Zusätzliche Scanner</div>
+      <div class="muted small" style="margin:.3rem 0 .8rem">Ausgeführte Engines: ${escapeHtml(engineList)}. Zeigt nur Befunde, die nicht bereits von grype gefunden wurden.</div>
+      ${newFindings.length === 0
+        ? `<div class="ok-banner">✓ Keine zusätzlichen Befunde (alle bereits von grype abgedeckt).</div>`
+        : `
+      <details class="group">
+        <summary>
+          <span class="caret" aria-hidden="true">▸</span>
+          <span class="group-name">Neue Befunde (nicht in grype)</span>
+          <span class="group-count">${newFindings.length}</span>
+        </summary>
+        <div class="group-body">
+          <div class="filter-bar">
+            <input type="search" class="tbl-filter" placeholder="Filtern …" onclick="event.stopPropagation()" data-total="${Math.min(newFindings.length, 200)}" />
+            <span class="filter-count"></span>
+          </div>
+          <table>
+            <thead><tr><th>CVE/ID</th><th>Severity</th><th>Paket</th><th>Version</th><th>Scanner</th><th>Link</th></tr></thead>
+            <tbody>${rows}${overflowHint}</tbody>
+          </table>
+        </div>
+      </details>`}`);
+  }
+
+  // 5. Binär-Analyse (cve-bin-tool)
+  if (extras.binary?.ran) {
+    const bin = extras.binary;
+    if (bin.findings.length > 0) {
+      const rows = bin.findings.map((f) => {
+        const c = SEVERITY_COLORS[f.severity as Severity] ?? SEVERITY_COLORS['Unknown'];
+        return `
+          <tr>
+            <td class="mono small">${escapeHtml(f.id)}</td>
+            <td><span class="sev-badge" style="background:${c.border};color:#fff;font-size:.68rem;padding:.1rem .4rem;border-radius:999px">${f.severity}</span></td>
+            <td class="small">${escapeHtml(f.product)}</td>
+            <td class="mono small">${escapeHtml(f.version)}</td>
+            <td class="small muted">${escapeHtml(f.source)}</td>
+          </tr>`;
+      }).join('');
+      sections.push(`
+        <div class="section-title">Binär-Analyse (cve-bin-tool)</div>
+        <details class="group">
+          <summary>
+            <span class="caret" aria-hidden="true">▸</span>
+            <span class="group-name">CVEs in Binärdateien</span>
+            <span class="group-count">${bin.findings.length}</span>
+          </summary>
+          <div class="group-body">
+            <div class="filter-bar">
+              <input type="search" class="tbl-filter" placeholder="Filtern …" onclick="event.stopPropagation()" data-total="${bin.findings.length}" />
+              <span class="filter-count"></span>
+            </div>
+            <table>
+              <thead><tr><th>CVE</th><th>Severity</th><th>Produkt</th><th>Version</th><th>Fundstelle</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </details>`);
+    } else {
+      sections.push(`
+        <div class="section-title">Binär-Analyse (cve-bin-tool)</div>
+        <div class="ok-banner">✓ Keine CVEs in eingebetteten Binärdateien gefunden.</div>`);
+    }
+  }
+
+  return sections.join('\n');
+}
+
+function buildFooterScannerList(extras: SummaryExtras | null): string {
+  const parts: string[] = [];
+  if (extras?.extraScan?.ranTrivy) parts.push('trivy');
+  if (extras?.extraScan?.ranOsv) parts.push('osv-scanner');
+  if (extras?.secrets?.ran) parts.push('gitleaks');
+  if (extras?.binary?.ran) parts.push('cve-bin-tool');
+  if (parts.length === 0) return '';
+  return ` · Weitere Scanner: ${escapeHtml(parts.join(', '))}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResult> {
   const {
     cdxJsonPath, grypeJsonPath, reportMdPath, outDir, inputName, jobId, logger,
@@ -567,6 +836,9 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
     medium:   vulnBySev.Medium.length,
     low:      vulnBySev.Low.length,
   };
+  const secretCount = opts.extras?.secrets?.count ?? 0;
+  const maliciousCount = opts.extras?.extraScan?.maliciousPackages?.length ?? 0;
+
   const rating = computeRating({
     componentCount: comps.length,
     severityCounts: sevCounts,
@@ -580,6 +852,8 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
     eolCount: eolHits.length,
     typosquatCount: typosquatHits.length,
     policyFailed: policyResult ? !policyResult.passed : false,
+    secretCount,
+    maliciousCount,
   });
 
   const licenseChips = LICENSE_CATEGORY_ORDER.map((cat) => {
@@ -949,6 +1223,10 @@ export async function buildSummaryReport(opts: SummaryOpts): Promise<SummaryResu
       </details>`;
   })();
 
+  // ── Extra-Sektionen (Security-Scanner-Ergebnisse) ───────────────────────────
+  const extraSectionsHtml = buildExtraSections(opts.extras ?? null, matches);
+  const footerScannerList = buildFooterScannerList(opts.extras ?? null);
+
   const componentCvesJson = JSON.stringify(componentCvesMap);
 
   const html = `<!doctype html>
@@ -1084,6 +1362,15 @@ padding:1rem 1.2rem;margin:.8rem 0}
 .drill-panel table{font-size:.82rem}
 .drill-panel th{font-size:.72rem}
 .comp-risk-row:hover{background:rgba(0,43,127,.04)}
+/* Warn-Banner für kritische Funde */
+.warn-banner{margin:1rem 0;padding:.8rem 1rem;border-radius:10px;
+background:#fee2e2;color:#7f1d1d;border:1px solid #b91c1c;font-weight:600}
+@media (prefers-color-scheme:dark){.warn-banner{background:#2c0808;color:#f87171;border-color:#7f1d1d}}
+/* PQC-unsafe / weak Chip-Styles */
+.chip-weak{background:#ffedd5;color:#9a3412;border-color:#ea580c;padding:.2rem .55rem;
+border-radius:999px;font-size:.75rem;font-weight:600;border:1px solid;display:inline-block;margin:.1rem}
+.chip-pqc{background:#e0f2fe;color:#075985;border-color:#0369a1;padding:.2rem .55rem;
+border-radius:999px;font-size:.75rem;font-weight:600;border:1px solid;display:inline-block;margin:.1rem}
 .print-btn{position:fixed;bottom:1.2rem;right:1.2rem;padding:.55rem 1.1rem;
 background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:.85rem;
 font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:100}
@@ -1212,10 +1499,12 @@ font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:100}
     ? `<div class="ok-banner">✓ Keine bekannten Schwachstellen in den katalogisierten Komponenten.</div>`
     : vulnsHtml}
 
+  ${extraSectionsHtml}
+
   ${residualHtml ? `<div class="section-title">Restrisiken</div>${residualHtml}` : ''}
 
   <footer class="summary">
-    <div>Erzeugt ${new Date().toISOString()} · extract-sbom-Output: ${escapeHtml(path.basename(cdxJsonPath))}${grype ? ` · grype ${escapeHtml(grype.descriptor?.version ?? '?')}${grype.descriptor?.db?.built ? ` · Vuln-DB ${escapeHtml(grype.descriptor.db.built)}` : ''}` : ''}</div>
+    <div>Erzeugt ${new Date().toISOString()} · extract-sbom-Output: ${escapeHtml(path.basename(cdxJsonPath))}${grype ? ` · grype ${escapeHtml(grype.descriptor?.version ?? '?')}${grype.descriptor?.db?.built ? ` · Vuln-DB ${escapeHtml(grype.descriptor.db.built)}` : ''}` : ''}${footerScannerList}</div>
     <div class="tools-credit">
       Analysiert mit freier Open-Source-Software:
       <a href="https://github.com/TomTonic/extract-sbom" target="_blank" rel="noopener">extract-sbom</a> (SBOM-Extraktion, BSD-3) ·

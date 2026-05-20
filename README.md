@@ -31,16 +31,30 @@ und Weiterverschicken.
 - **Pre-Extraktion** für reine `.exe`-Installer (Inno Setup, NSIS): wir
   knacken das Wrapping mit `7z` bzw. `innoextract` auf und reichen
   extract-sbom ein ZIP weiter, das es kennt
-- **CVE-Scan** über die CycloneDX-SBOM mit [grype](https://github.com/anchore/grype);
-  Ergebnis als JSON, CSV (Excel-tauglich, UTF-8 BOM) und farbig-
-  kategorisiertem HTML (Critical/High/Medium/Low/Negligible)
-- **Gesamtübersicht-HTML** kombiniert Komponenten (gruppiert nach
-  Ecosystem), Lizenz-Compliance (permissive/weak-copyleft/strong-
-  copyleft/proprietary), Schwachstellen und Restrisiken in einer
-  standalone-Seite — alle Sektionen aufklappbar, Live-Filter über jede
-  Tabelle
+- **CVE-Scan** über die CycloneDX-SBOM mit [grype](https://github.com/anchore/grype)
+  plus [trivy](https://github.com/aquasecurity/trivy) und
+  [osv-scanner](https://github.com/google/osv-scanner) als zweiter und
+  dritter Engine — Kreuzvalidierung, mehr Abdeckung
+- **KEV + EPSS Anreicherung**: aktiv ausgenutzte Schwachstellen aus der
+  [CISA KEV-Liste](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+  werden rot markiert; EPSS-Exploit-Wahrscheinlichkeit als Prozent angezeigt
+- **Bösartige-Paket-Erkennung** via osv-scanner (MAL-* IDs) — Alarm wenn
+  das Artefakt Pakete mit bestätigter Malware enthält
+- **Secret-Scanner** via [gitleaks](https://github.com/gitleaks/gitleaks):
+  findet versehentlich eingebettete Credentials — NIEMALS im Klartext
+  (Shred + Redaction, nur maskierte Vorschau in den Reports)
+- **Cryptographic Bill of Materials (CBOM)**: heuristischer Krypto-Inventar
+  aus SBOM-Komponenten — erkennt bekannte Krypto-Bibliotheken, markiert
+  schwache Primitive und fehlende Post-Quantum-Sicherheit
+- **Binär-Analyse** via [cve-bin-tool](https://github.com/intel/cve-bin-tool):
+  CVEs in eingebetteten kompilierten Bibliotheken direkt im Artefakt
 - **VEX-Skelett** ([CycloneDX VEX 1.6](https://github.com/CycloneDX/bom-examples/tree/master/VEX))
-  zum Befüllen für Lieferketten-Integrationen
+  jetzt automatisch vorausgefüllt: KEV-Treffer als `exploitable`, Fixes
+  als `in_triage` mit Update-Response — noch menschliche Prüfung nötig
+- **Gesamtübersicht-HTML** kombiniert Komponenten, Lizenz-Compliance,
+  Schwachstellen, Secrets, CBOM, Zusatz-Scanner und Binär-Analyse in einer
+  standalone-Seite — alle Sektionen aufklappbar, Live-Filter über jede
+  Tabelle, Software-Delivery-Quality-Score berücksichtigt KEV und Secrets
 - **SPDX-Export** via `syft convert` zusätzlich zu CycloneDX für Tools
   wie FOSSology oder ORT
 - **Live-Telemetrie** über Server-Sent Events: PID, Kommando, Phase mit
@@ -65,8 +79,13 @@ und Weiterverschicken.
 | `<name>.vulnerabilities.json` | grype JSON | CVE-Treffer in Rohform |
 | `<name>.vulnerabilities.csv` | CSV | CVE-Liste für Excel/Auditoren |
 | `<name>.vulnerabilities.html` | Standalone HTML | farbig kategorisiert, aufklappbar nach Severity |
-| `<name>.vex.json` | CycloneDX VEX | Skelett zum Befüllen pro CVE |
-| `<name>.summary.html` | Standalone HTML | **Gesamtübersicht**: Komponenten + Lizenzen + CVEs + Restrisiken |
+| `<name>.trivy.json` | trivy JSON | CVE-Treffer von trivy (zweiter Scanner) |
+| `<name>.osv.json` | osv-scanner JSON | CVE- und Malware-Treffer (osv-scanner) |
+| `<name>.secrets.json` | JSON | Secret-Funde (gitleaks) — nur maskierte Vorschau |
+| `<name>.cbom.json` | CycloneDX 1.6 JSON | Kryptografisches Bill of Materials |
+| `<name>.binary-cve.json` | JSON | CVEs in eingebetteten Binärdateien (cve-bin-tool) |
+| `<name>.vex.json` | CycloneDX VEX | Vorausgefülltes VEX-Skelett (KEV→exploitable, Fix→in_triage) |
+| `<name>.summary.html` | Standalone HTML | **Gesamtübersicht**: alle Scanner, KEV/Secrets/CBOM/Binär |
 
 In der UI-Job-Karte gibt es pro Datei drei Aktionen:
 
@@ -95,9 +114,9 @@ Update-Workflow:
 docker compose pull && docker compose up -d
 ```
 
-Das Image bringt alles mit: `extract-sbom`, `syft`, `grype`,
-`innoextract`, `p7zip-full`, `unshield`, `tini`. Du brauchst nur einen
-Docker-Host.
+Das Image bringt alles mit: `extract-sbom`, `syft`, `grype`, `trivy`,
+`osv-scanner`, `gitleaks`, `cve-bin-tool`, `innoextract`, `p7zip-full`,
+`unshield`, `tini`. Du brauchst nur einen Docker-Host.
 
 Die compose-Datei legt automatisch ein **persistentes Volume**
 `grype-cache` für die Vuln-DB an, damit sie Container-Restarts
@@ -137,6 +156,8 @@ beschreibbar, Frontend-Build da).
 | `TRUST_PROXY` | `0` | Auf `1` setzen wenn hinter TLS-Proxy (Caddy/nginx/Traefik). Macht Cookie `Secure` und respektiert `X-Forwarded-*` |
 | `LOG_LEVEL` | `info` | pino-Level |
 | `LOG_PRETTY` | _(auto)_ | Forciert pretty-stdout |
+| `BINARY_SCAN_MAX_BYTES` | `2147483648` | Max. Artefaktgröße für cve-bin-tool (2 GiB) |
+| `SECRET_SCAN_MAX_BYTES` | `1073741824` | Max. Upload-Größe zum Entpacken für gitleaks (1 GiB) |
 
 ## Versionsanzeige
 
@@ -165,8 +186,11 @@ funktioniert. Für Single-User-Setups ist das angemessen; wer das App
 - Passwörter wandern bevorzugt in die `EXTRACT_SBOM_PASSWORDS`-Env-Var
   des Kind-Prozesses (kommen nie auf Disk). Fallback: 0600-Datei, die
   per `crypto.randomBytes` überschrieben und dann unlinked wird.
-- Das hochgeladene Artefakt wird gelöscht, sobald extract-sbom beendet
-  ist. Die erzeugten Berichte bleiben bis zur Session-Zerstörung.
+- Das hochgeladene Artefakt wird gelöscht, sobald extract-sbom sowie
+  der Binär- und Secret-Scan darauf beendet sind. Die erzeugten Berichte
+  bleiben bis zur Session-Zerstörung. gitleaks-Rohausgaben (mit echten
+  Secret-Werten) werden vor der Aufbereitung per Shred gelöscht — in die
+  Output-Dateien wandert ausschließlich eine maskierte Vorschau.
 - Auto-Cleanup über Idle-GC (30 min), Browser-Reload, „Neue
   Sitzung"-Button, oder SIGTERM-Drain.
 
@@ -207,7 +231,7 @@ public/                  index.html, styles.css, vendorter tus-Client
 scripts/install.sh       Setup-Skript (Submodule + Go-Build + npm + Vendor)
 scripts/preflight.sh     Bereitschafts-Prüfung
 vendor/extract-sbom/     Git-Submodule auf TomTonic/extract-sbom
-tests/                   vitest-Suite (71 Tests)
+tests/                   vitest-Suite (85 Tests)
 .github/workflows/       Docker-Build- + Publish-Pipeline
 ```
 
@@ -219,10 +243,11 @@ npm test            # vitest
 npm run typecheck   # tsc --noEmit für Server + Frontend
 ```
 
-71 Tests decken Security-Middlewares (CSRF, Basic-Auth, Rate-Limit,
+85 Tests decken Security-Middlewares (CSRF, Basic-Auth, Rate-Limit,
 Security-Headers), Session-Lebenszyklus, Passwort-Transport (env vs.
-Datei, Shred-on-exit), Step-Detector, Sandbox-Builder, Graceful-Drain
-und das Job-Lifecycle ab.
+Datei, Shred-on-exit), Step-Detector, Sandbox-Builder, Graceful-Drain,
+das Job-Lifecycle sowie die Security-Scanner-Module (CBOM-Erkennung,
+Secret-Redaction, KEV/EPSS-Offline-Modus, Graceful-Degradation) ab.
 
 ## Contributing
 
