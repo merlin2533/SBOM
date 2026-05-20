@@ -48,13 +48,17 @@ und Weiterverschicken.
   schwache Primitive und fehlende Post-Quantum-Sicherheit
 - **Binär-Analyse** via [cve-bin-tool](https://github.com/intel/cve-bin-tool):
   CVEs in eingebetteten kompilierten Bibliotheken direkt im Artefakt
+- **Malware-Scan** via [ClamAV](https://www.clamav.net/): `clamscan` läuft
+  als One-Shot pro Upload (kein dauerhafter Daemon) gegen das rohe Artefakt;
+  ein Treffer kappt die Bewertung auf Note F
 - **VEX-Skelett** ([CycloneDX VEX 1.6](https://github.com/CycloneDX/bom-examples/tree/master/VEX))
   jetzt automatisch vorausgefüllt: KEV-Treffer als `exploitable`, Fixes
   als `in_triage` mit Update-Response — noch menschliche Prüfung nötig
 - **Gesamtübersicht-HTML** kombiniert Komponenten, Lizenz-Compliance,
-  Schwachstellen, Secrets, CBOM, Zusatz-Scanner und Binär-Analyse in einer
-  standalone-Seite — alle Sektionen aufklappbar, Live-Filter über jede
-  Tabelle, Software-Delivery-Quality-Score berücksichtigt KEV und Secrets
+  Schwachstellen, Secrets, CBOM, Zusatz-Scanner, Binär-Analyse und
+  Malware-Scan in einer standalone-Seite — alle Sektionen aufklappbar,
+  Live-Filter über jede Tabelle, Software-Delivery-Quality-Score
+  berücksichtigt KEV, Secrets und Malware
 - **SPDX-Export** via `syft convert` zusätzlich zu CycloneDX für Tools
   wie FOSSology oder ORT
 - **Live-Telemetrie** über Server-Sent Events: PID, Kommando, Phase mit
@@ -84,8 +88,9 @@ und Weiterverschicken.
 | `<name>.secrets.json` | JSON | Secret-Funde (gitleaks) — nur maskierte Vorschau |
 | `<name>.cbom.json` | CycloneDX 1.6 JSON | Kryptografisches Bill of Materials |
 | `<name>.binary-cve.json` | JSON | CVEs in eingebetteten Binärdateien (cve-bin-tool) |
+| `<name>.clamav.json` | JSON | Malware-Treffer im Artefakt (ClamAV) |
 | `<name>.vex.json` | CycloneDX VEX | Vorausgefülltes VEX-Skelett (KEV→exploitable, Fix→in_triage) |
-| `<name>.summary.html` | Standalone HTML | **Gesamtübersicht**: alle Scanner, KEV/Secrets/CBOM/Binär |
+| `<name>.summary.html` | Standalone HTML | **Gesamtübersicht**: alle Scanner, KEV/Secrets/CBOM/Binär/Malware |
 
 In der UI-Job-Karte gibt es pro Datei drei Aktionen:
 
@@ -115,8 +120,9 @@ docker compose pull && docker compose up -d
 ```
 
 Das Image bringt alles mit: `extract-sbom`, `syft`, `grype`, `trivy`,
-`osv-scanner`, `gitleaks`, `cve-bin-tool`, `innoextract`, `p7zip-full`,
-`unshield`, `tini`. Du brauchst nur einen Docker-Host.
+`osv-scanner`, `gitleaks`, `cve-bin-tool`, `clamav` (inkl. Signatur-DB
+zum Build-Zeitpunkt), `innoextract`, `p7zip-full`, `unshield`, `tini`.
+Du brauchst nur einen Docker-Host.
 
 Die compose-Datei legt automatisch ein **persistentes Volume**
 `grype-cache` für die Vuln-DB an, damit sie Container-Restarts
@@ -158,6 +164,7 @@ beschreibbar, Frontend-Build da).
 | `LOG_PRETTY` | _(auto)_ | Forciert pretty-stdout |
 | `BINARY_SCAN_MAX_BYTES` | `2147483648` | Max. Artefaktgröße für cve-bin-tool (2 GiB) |
 | `SECRET_SCAN_MAX_BYTES` | `1073741824` | Max. Upload-Größe zum Entpacken für gitleaks (1 GiB) |
+| `CLAMAV_SCAN_MAX_BYTES` | `2147483648` | Max. Artefaktgröße für den ClamAV-Malware-Scan (2 GiB) |
 
 ## Versionsanzeige
 
@@ -231,7 +238,7 @@ public/                  index.html, styles.css, vendorter tus-Client
 scripts/install.sh       Setup-Skript (Submodule + Go-Build + npm + Vendor)
 scripts/preflight.sh     Bereitschafts-Prüfung
 vendor/extract-sbom/     Git-Submodule auf TomTonic/extract-sbom
-tests/                   vitest-Suite (85 Tests)
+tests/                   vitest-Suite (88 Tests)
 .github/workflows/       Docker-Build- + Publish-Pipeline
 ```
 
@@ -243,7 +250,7 @@ npm test            # vitest
 npm run typecheck   # tsc --noEmit für Server + Frontend
 ```
 
-85 Tests decken Security-Middlewares (CSRF, Basic-Auth, Rate-Limit,
+88 Tests decken Security-Middlewares (CSRF, Basic-Auth, Rate-Limit,
 Security-Headers), Session-Lebenszyklus, Passwort-Transport (env vs.
 Datei, Shred-on-exit), Step-Detector, Sandbox-Builder, Graceful-Drain,
 das Job-Lifecycle sowie die Security-Scanner-Module (CBOM-Erkennung,

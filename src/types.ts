@@ -29,6 +29,8 @@ export interface ServerConfig {
   binaryScanMaxBytes: number;
   // Secret-Scan-Limit
   secretScanMaxBytes: number;
+  // Malware-Scan-Limit (ClamAV)
+  clamavScanMaxBytes: number;
 }
 
 export interface LogEntry {

@@ -148,6 +148,13 @@ RUN set -ux; \
       && /opt/cve-bin-tool/bin/pip install --no-cache-dir cve-bin-tool \
       && ln -sf /opt/cve-bin-tool/bin/cve-bin-tool /usr/local/bin/cve-bin-tool ) \
       || echo "WARN: cve-bin-tool-Installation fehlgeschlagen — Scanner wird zur Laufzeit übersprungen"; \
+    # clamav: Malware-Scanner. clamscan läuft als One-Shot pro Job (KEIN
+    # dauerhafter clamd-Daemon). freshclam lädt die Signatur-DB einmalig zur
+    # Build-Zeit nach /var/lib/clamav (Stand: Image-Build).
+    ( apt-get update \
+      && apt-get install -y --no-install-recommends clamav clamav-freshclam \
+      && freshclam --quiet ) \
+      || echo "WARN: clamav-Installation/Signatur-DB fehlgeschlagen — Scanner wird zur Laufzeit übersprungen"; \
     rm -rf /var/lib/apt/lists/*
 
 # extract-sbom binary from stage 1.

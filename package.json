@@ -1,6 +1,6 @@
 {
   "name": "sbom-upload-app",
-  "version": "2.11.5",
+  "version": "2.12.0",
   "description": "Ephemeral, self-hosted web frontend that wraps TomTonic/extract-sbom: resumable uploads, sandboxed analysis, downloadable CycloneDX SBOM and audit report.",
   "keywords": [
     "sbom",

@@ -367,3 +367,73 @@ describe('runBinaryScan', () => {
     expect(result.ran).toBe(false);
   });
 });
+
+// ─── ClamScan-Tests ───────────────────────────────────────────────────────────
+
+describe('runClamScan', () => {
+  it('gibt eine valide Struktur zurück (ran:false wenn clamscan fehlt)', async () => {
+    const { runClamScan } = await import('../src/clamav-scan');
+
+    const outDir = join(tmpDir, 'clamav-scan-test-1');
+    mkdirSync(outDir, { recursive: true });
+
+    const testFile = join(tmpDir, 'clam-artifact.bin');
+    writeFileSync(testFile, Buffer.alloc(100, 0));
+
+    const result = await runClamScan({
+      target: testFile,
+      outDir,
+      inputName: 'clam-artifact.bin',
+      maxBytes: 1 * 1024 * 1024 * 1024,
+      logger,
+      jobId: JOB_ID,
+    });
+
+    expect(result).toHaveProperty('ran');
+    expect(result).toHaveProperty('infectedCount');
+    expect(result).toHaveProperty('findings');
+    expect(Array.isArray(result.findings)).toBe(true);
+    expect(typeof result.ran).toBe('boolean');
+  });
+
+  it('überspringt Dateien die größer als maxBytes sind', async () => {
+    const { runClamScan } = await import('../src/clamav-scan');
+
+    const outDir = join(tmpDir, 'clamav-scan-test-2');
+    mkdirSync(outDir, { recursive: true });
+
+    const testFile = join(tmpDir, 'clam-artifact-big.bin');
+    writeFileSync(testFile, Buffer.alloc(100, 0));
+
+    const result = await runClamScan({
+      target: testFile,
+      outDir,
+      inputName: 'clam-artifact-big.bin',
+      maxBytes: 10, // Sehr kleines Limit
+      logger,
+      jobId: JOB_ID,
+    });
+
+    expect(result.ran).toBe(false);
+    expect(result.findings).toHaveLength(0);
+    expect(result.infectedCount).toBe(0);
+  });
+
+  it('gibt {ran:false} für nicht-existierende Datei zurück', async () => {
+    const { runClamScan } = await import('../src/clamav-scan');
+
+    const outDir = join(tmpDir, 'clamav-scan-test-3');
+    mkdirSync(outDir, { recursive: true });
+
+    const result = await runClamScan({
+      target: join(tmpDir, 'nonexistent-clam.bin'),
+      outDir,
+      inputName: 'nonexistent-clam.bin',
+      maxBytes: 1 * 1024 * 1024 * 1024,
+      logger,
+      jobId: JOB_ID,
+    });
+
+    expect(result.ran).toBe(false);
+  });
+});
